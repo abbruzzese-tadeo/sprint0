@@ -1,4 +1,8 @@
 @import "tailwindcss";
+body {
+  color: #1f2937; /* Equivalente a text-gray-800 por defecto */
+}
+     
 
 :root {
   --background: #ffffff;
