@@ -13,7 +13,23 @@ export interface UserProfile {
 }
 
 // Nuevo: Para batches
-export interface BatchUser extends UserProfile {} // Mismo que UserProfile
+export interface BatchUser {
+  uid: string;
+  email: string;
+  role: Role;
+  batchId: string; 
+}
 export interface UserBatch {
   users: BatchUser[];
+}
+
+export interface StudentData {
+    student: string;
+    email: string;
+    level: string;
+    language: string;
+    teacher: string;
+    format: string;
+    delivery: string;
+    schedule: string;
 }
