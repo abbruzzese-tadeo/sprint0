@@ -18,23 +18,45 @@ export const addUserToBatch = async (firebaseUser: User, role: Role = 'alumno') 
 
   // Buscar batches existentes
   const batchesSnapshot = await getDocs(collection(db, 'userBatches'));
-  let targetBatchId: string | null = null;
-  let nextSlot: number | null = null;
 
+  // Convertir snapshot a array para manejo
   const batches: { id: string; data: Record<string, any> }[] = [];
   batchesSnapshot.forEach(docSnap => {
     batches.push({ id: docSnap.id, data: docSnap.data() });
   });
 
-  // Ordenar por número de batch (batch_1, batch_2...)
+  // Función para validar si usuario ya está en batches
+  const isUserInBatches = (batches: { id: string; data: Record<string, any> }[], uid: string) => {
+    for (const batch of batches) {
+      for (const key in batch.data) {
+        if (key.startsWith(USER_KEY_PREFIX)) {
+          if (batch.data[key].uid === uid) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  // Si usuario ya existe, no lo agregamos
+  if (isUserInBatches(batches, firebaseUser.uid)) {
+    console.log('Usuario ya existe en batches, no se agrega.');
+    return;
+  }
+
+  // Ordenar batches para asignar slot en orden
   batches.sort((a, b) =>
     parseInt(a.id.replace('batch_', '')) - parseInt(b.id.replace('batch_', ''))
   );
 
+  let targetBatchId: string | null = null;
+  let nextSlot: number | null = null;
+
+  // Buscar batch con espacio libre y siguiente slot vacío
   for (const batch of batches) {
     const userKeys = Object.keys(batch.data).filter(key => key.startsWith(USER_KEY_PREFIX));
     if (userKeys.length < MAX_USERS_PER_BATCH) {
-      // Encontrar el siguiente slot vacío
       const usedSlots = userKeys.map(key => parseInt(key.replace(USER_KEY_PREFIX, ''))).sort((a, b) => a - b);
       nextSlot = 0;
       for (let i = 0; i <= usedSlots.length; i++) {
@@ -48,7 +70,7 @@ export const addUserToBatch = async (firebaseUser: User, role: Role = 'alumno') 
     }
   }
 
-  // Si no hay batch disponible, crea uno nuevo
+  // Si no hay batch disponible, crear uno nuevo
   if (!targetBatchId) {
     if (batches.length >= MAX_BATCHES) {
       throw new Error('Se alcanzó el límite máximo de batches.');
@@ -58,7 +80,7 @@ export const addUserToBatch = async (firebaseUser: User, role: Role = 'alumno') 
     targetBatchId = newBatchId;
     nextSlot = 0;
 
-    // Crear el documento vacío
+    // Crear documento vacío para el nuevo batch
     await setDoc(doc(db, 'userBatches', newBatchId), {});
   }
 
@@ -69,10 +91,12 @@ export const addUserToBatch = async (firebaseUser: User, role: Role = 'alumno') 
     role,
   };
 
+  // Agregar usuario en el batch seleccionado
   await updateDoc(doc(db, 'userBatches', targetBatchId), {
     [userKey]: newUser,
   });
 };
+
 
 
 // Fetch rol para un UID específico (busca en hasta MAX_BATCHES)
