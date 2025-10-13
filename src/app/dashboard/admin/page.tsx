@@ -6,7 +6,6 @@ import { Role } from '@/types/auth';
 import Header from '@/components/Header';
 import ProtectedRoute from '@/components/ProtectedRoute';
 import ConfirmationModal from '@/components/ConfirmationModal';
-import { fetchSheet } from '@/lib/fetchSheetData';
 
 interface StudentRow {
   student: string;
@@ -38,14 +37,27 @@ export default function AdminDashboard() {
   const [students, setStudents] = useState<StudentRow[]>([]);
   const [loadingSheet, setLoadingSheet] = useState(true);
   const [sheetError, setSheetError] = useState<string | null>(null);
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [rows, setRows] = useState<any[]>([]);
 
   useEffect(() => {
-    const loadSheets = async () => {
-      try {
-        setLoadingSheet(true);
-        const rows = await fetchSheet('A'); // Global_Alumnos
-        const headers = rows[0];
-        const data = rows.slice(1).map((r: string[]) => ({
+  const loadSheets = async () => {
+    try {
+      setLoadingSheet(true);
+      const res = await fetch('/api/sheets/A');
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`API error (${res.status}): ${text}`);
+      }
+      const json = await res.json();
+      const allRows: string[][] = json.rows || [];
+
+      if (allRows.length > 0) {
+        setHeaders(allRows[0]);       // Primera fila: encabezados
+        setRows(allRows.slice(1));    // El resto: datos
+
+        // Si quieres seguir usando students con objetos:
+        const studentsData = allRows.slice(1).map((r) => ({
           student: r[0] || '',
           email: r[1] || '',
           status: r[2] || '',
@@ -56,17 +68,22 @@ export default function AdminDashboard() {
           delivery: r[7] || '',
           schedule: r[8] || '',
         }));
-        setStudents(data);
-      } catch (err) {
-        console.error(err);
-        setSheetError('Error al cargar los datos desde Google Sheets.');
-      } finally {
-        setLoadingSheet(false);
+        setStudents(studentsData);
+      } else {
+        setHeaders([]);
+        setRows([]);
+        setStudents([]);
       }
-    };
+    } catch (err) {
+      console.error(err);
+      setSheetError('Error al cargar los datos desde Google Sheets.');
+    } finally {
+      setLoadingSheet(false);
+    }
+  };
 
-    loadSheets();
-  }, []);
+  loadSheets();
+}, []);
 
   const onSelectRole = (uid: string, email: string, newRole: Role) => {
     setPendingUserId(uid);
@@ -152,7 +169,7 @@ export default function AdminDashboard() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
                     </tr>
                   </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
+                  <tbody className="bg-white divide-y divide-gray-200 text-black">
                     {users.length === 0 ? (
                       <tr>
                         <td colSpan={3} className="px-6 py-4 text-center text-gray-500">
@@ -223,64 +240,56 @@ export default function AdminDashboard() {
 
           {/* Tabla de datos del Sheet */}
           <div>
-            <h2 className="text-xl font-semibold mb-3 text-gray-700">Datos de Alumnos</h2>
+  <h2 className="text-xl font-semibold mb-3 text-gray-700">
+    Datos de {headers[0] || 'Alumnos'}
+  </h2>
 
-            {loadingSheet ? (
-              <div className="text-center text-gray-600">Cargando datos del sheet...</div>
-            ) : (
-              <div className="bg-white rounded-lg shadow overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 text-sm">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      {[
-                        'Student',
-                        'Email',
-                        'Status',
-                        'Level',
-                        'Language',
-                        'Teacher',
-                        'Format',
-                        'Delivery',
-                        'Schedule',
-                      ].map((header) => (
-                        <th
-                          key={header}
-                          className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider"
-                        >
-                          {header}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {students.map((s, i) => (
-                      <tr key={i} className="hover:bg-gray-50">
-                        <td className="px-6 py-3">{s.student}</td>
-                        <td className="px-6 py-3">{s.email}</td>
-                        <td className="px-6 py-3">
-                          <span
-                            className={`px-2 py-1 rounded-full text-xs font-semibold ${
-                              s.status.toLowerCase() === 'active'
-                                ? 'bg-green-100 text-green-800'
-                                : 'bg-red-100 text-red-800'
-                            }`}
-                          >
-                            {s.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-3">{s.level}</td>
-                        <td className="px-6 py-3">{s.language}</td>
-                        <td className="px-6 py-3">{s.teacher}</td>
-                        <td className="px-6 py-3">{s.format}</td>
-                        <td className="px-6 py-3">{s.delivery}</td>
-                        <td className="px-6 py-3">{s.schedule}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+  {loadingSheet ? (
+    <div className="text-center text-gray-600">Cargando datos del sheet...</div>
+  ) : (
+    <div className="bg-white rounded-lg shadow overflow-x-auto">
+      <table className="min-w-full divide-y divide-gray-200 text-sm">
+        <thead className="bg-gray-50">
+          <tr>
+            {headers.map((header) => (
+              <th
+                key={header}
+                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider"
+              >
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="bg-white divide-y divide-gray-200 text-black">
+          {rows.map((row, i) => (
+            <tr key={i} className="hover:bg-gray-50">
+              {row.map((cell: string, idx: number) => (
+                <td key={idx} className="px-6 py-3">
+                  {/* Para la columna 'status', aplicamos el estilo especial */}
+                  {headers[idx]?.toLowerCase() === 'status' ? (
+                    <span
+                      className={`px-2 py-1 rounded-full text-xs font-semibold ${
+                        cell.toLowerCase() === 'active'
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-red-100 text-red-800'
+                      }`}
+                    >
+                      {cell}
+                    </span>
+                  ) : (
+                    cell
+                  )}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )}
+</div>
+
 
           <div className="mt-6 text-center">
             <button
