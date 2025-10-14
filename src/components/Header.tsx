@@ -1,33 +1,28 @@
+// src/components/Header.tsx
 'use client';
 
+import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
-import { useRouter } from 'next/navigation';
 
 export default function Header() {
   const { user, logout } = useAuth();
-  const router = useRouter();
-
-  const handleLogout = async () => {
-    await logout();
-    router.push('/'); // Redirige a home después de logout
-  };
-
-  if (!user) return null;
 
   return (
-    <header className="bg-blue-600 text-white p-4 shadow-md">
-      <div className="container mx-auto flex justify-between items-center">
-        <h1 className="text-xl font-bold">Mi App</h1>
-        <div className="flex items-center space-x-4">
-          <span className="text-sm">Hola, {user.email}</span>
+    <div className="bg-blue-600 text-white shadow">
+      {/* El contenedor centra y tiene la misma max-width que tu contenido */}
+      <div className="max-w-7xl mx-auto h-16 flex items-center justify-between px-6">
+        <div className="text-lg font-semibold">Mi App</div>
+
+        <div className="flex items-center gap-4">
+          <span className="text-sm">Hola, {user?.email ?? 'invitado'}</span>
           <button
-            onClick={handleLogout}
-            className="bg-red-500 hover:bg-red-700 px-4 py-2 rounded text-white transition"
+            onClick={logout}
+            className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded"
           >
             Logout
           </button>
         </div>
       </div>
-    </header>
+    </div>
   );
 }

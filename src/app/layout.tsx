@@ -1,3 +1,4 @@
+// src/app/layout.tsx
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
@@ -21,10 +22,11 @@ export default function RootLayout({
       <body className={inter.className}>
         <AuthProvider>
           <UsersProvider>
+            {/* Layout global simple — NO sidebar ni header aquí */}
+            <div className="min-h-screen bg-gray-50">
               {children}
+            </div>
           </UsersProvider>
-          
-          
         </AuthProvider>
       </body>
     </html>
