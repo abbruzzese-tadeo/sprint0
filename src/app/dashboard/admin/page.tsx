@@ -14,9 +14,11 @@ import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { toast } from 'sonner';
 
-import CourseCard from './cursos/CourseCard';
-import CreateCourse from './cursos/crear/CreateCourse';
-import EditCourseForm from './cursos/edit/EditCourseForm';
+import CourseCard from '../../../components/cursos/CourseCard';
+import CreateCourse from '../../../components/cursos/crear/CreateCourse';
+import EditCourseForm from '../../../components/cursos/edit/EditCourseForm'
+import { doc, deleteDoc } from "firebase/firestore";
+
 
 
 export default function AdminCoursesPage() {
@@ -85,19 +87,51 @@ export default function AdminCoursesPage() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
 
 
-  const handleEdit = (course: any) => {
-    setSelectedCourse(course);
-    setIsModalOpen(true);
+ const handleEdit = (course: any) => {
+  const mappedCourse = {
+    id: course.id,
+    titulo: course.title,
+    descripcion: course.description,
+    nivel: course.level,
+    categoria: course.category,
+    publico: course.visible,
+    urlImagen: course.image,
+    precio: { monto: course.price, montoDescuento: course.oldPrice },
+    unidades: course.unidades || [],
+    cursantes: course.students || [],
+    capstone: course.type === "Proyecto Capstone",
+    creadoEn: course.created,
   };
 
-  const handleSave = (updatedCourse: any) => {
-    setCourses((prev) =>
-      prev.map((c) => (c.id === updatedCourse.id ? updatedCourse : c))
-    );
-  };
+  console.log("🧩 Curso seleccionado para editar:", mappedCourse);
+  setSelectedCourse(mappedCourse);
+  setIsModalOpen(true);
+};
 
-  const handleDelete = (id: string) =>
+ const handleSave = () => {
+  toast.success("Cambios guardados correctamente");
+  setIsModalOpen(false);
+};
+
+
+ const handleDelete = async (id: string) => {
+  try {
+    const confirmDelete = confirm("¿Estás seguro de que quieres eliminar este curso?");
+    if (!confirmDelete) return;
+
+    // 🔥 Eliminar de Firestore
+    await deleteDoc(doc(db, "cursos", id));
+
+    // 🧹 Remover del estado local para reflejar el cambio
     setCourses((prev) => prev.filter((c) => c.id !== id));
+
+    toast.success("Curso eliminado correctamente");
+  } catch (error) {
+    console.error("❌ Error eliminando curso:", error);
+    toast.error("Error al eliminar el curso");
+  }
+};
+
 
   const handleToggleVisibility = (id: string) =>
     setCourses((prev) =>
@@ -176,12 +210,12 @@ export default function AdminCoursesPage() {
 
     
       {selectedCourse && (
-        <EditCourseForm
-          course={selectedCourse}
-          onClose={() => setIsModalOpen(false)}
-          onSave={handleSave}
-        />
-      )}
+  <EditCourseForm
+    courseId={selectedCourse.id} // 👈 solo le pasás el ID
+    onClose={() => setIsModalOpen(false)}
+  />
+)}
+
     
   </DialogContent>
 </Dialog>

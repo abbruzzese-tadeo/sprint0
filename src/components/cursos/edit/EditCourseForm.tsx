@@ -1,8 +1,10 @@
 "use client";
 
 /**
- * CrearCurso — Functional parity with EditarCurso
- * - Global tabs: general | unidades | examen | capstone | cierrecurso | cursantes
+ * EditarCurso — Functional parity with CrearCurso
+ * - Carga por courseId desde Firestore (getDoc)
+ * - Guarda con updateDoc
+ * - Tabs: general | unidades | examen | capstone | cierrecurso | cursantes
  * - Units: NO video at unit level (force urlVideo=""), optional duration
  * - Lessons: title (required), text/video/pdf optional, exercises[], finalMessage
  * - Final Exam: introTexto + ejercicios[] (no video)
@@ -10,25 +12,24 @@
  * - Closing: textoFinalCurso + textoFinalCursoVideoUrl (validate URL)
  * - Storage uploads: course thumbnail + lesson PDFs
  * - Pricing normalized; toasts via Sonner
- * - On create: addDoc + serverTimestamp; enroll students into alumnos/{email}.cursosAdquiridos via arrayUnion
+ * - On edit: updateDoc; setCursos reemplaza el curso editado
+ * - Students: sincroniza altas/bajas (arrayUnion / arrayRemove) en alumnos/{email}.cursosAdquiridos
  */
 
-import React, { useContext, useState, useEffect, useMemo } from "react";
+import React, { useContext, useEffect, useMemo, useState } from "react";
 import {
   collection,
-  addDoc,
-  serverTimestamp,
-  writeBatch,
   doc,
+  getDoc,
+  updateDoc,
+  writeBatch,
   arrayUnion,
+  arrayRemove,
   Firestore,
   Timestamp,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, FirebaseStorage } from "firebase/storage";
-import ContextGeneral from "@/contexts/contextGeneral"; // Assuming this path is correct
 import { toast } from "sonner";
-import Exercises from "../cursoItem/exercises/Exercises";
-// import Exercises from "../cursoItem/exercises/Exercises"; // Assuming this path is correct
 import {
   FiPlus,
   FiTrash2,
@@ -52,23 +53,23 @@ import {
   FiDollarSign,
   FiGlobe,
 } from "react-icons/fi";
+import Exercises from "../cursoItem/exercises/Exercises";
+import ContextGeneral from "@/contexts/contextGeneral";
 import { storage, db } from "@/lib/firebase";
 
 /* ----------------- Interfaces for Data Structures ----------------- */
 
 interface Precio {
-  monto: number | string; // Can be string for input, then parsed to number
-  montoDescuento: number | string; // Can be string for input, then parsed to number
+  monto: number | string;
+  montoDescuento: number | string;
   descuentoActivo: boolean;
 }
 
 interface Ejercicio {
-  // Define structure of an exercise
   id: string;
   pregunta: string;
   opciones: { texto: string; correcto: boolean }[];
   tipo: "multiple_choice" | "true_false" | "text_input";
-  // Add other fields as needed
 }
 
 interface Leccion {
@@ -82,16 +83,23 @@ interface Leccion {
   finalMessage: string;
 }
 
+interface UnidadClosing {
+  examIntro?: string;
+  examExercises?: Ejercicio[];
+  closingText?: string;
+}
+
 interface Unidad {
   id: string;
   titulo: string;
   descripcion: string;
   urlVideo: string; // Forced empty on save
-  duracion?: number; // Optional duration in minutes
+  duracion?: number;
   urlImagen: string;
-  ejercicios: Ejercicio[]; // Although exercises are handled at lesson level, kept for backward compat
-  textoCierre: string;
+  ejercicios: Ejercicio[]; // retained for compat
+  textoCierre: string; // retained for compat
   lecciones: Leccion[];
+  closing?: UnidadClosing; // para soportar el tab "cierre" a nivel unidad (manteniendo lo que tenías)
 }
 
 interface ExamenFinal {
@@ -114,12 +122,12 @@ interface Curso {
   videoPresentacion: string;
   urlImagen: string;
   precio: Precio;
-  cursantes: string[]; // array of student emails
+  cursantes: string[];
   textoFinalCurso: string;
   textoFinalCursoVideoUrl: string;
-  unidades?: Unidad[]; // Will be added on save
-  examenFinal?: ExamenFinal; // Will be added on save
-  capstone?: Capstone; // Will be added on save
+  unidades?: Unidad[];
+  examenFinal?: ExamenFinal;
+  capstone?: Capstone;
   creadoEn?: Timestamp;
 }
 
@@ -127,25 +135,21 @@ interface Alumno {
   email: string;
   displayName?: string;
   nombre?: string;
-  // Add other student-related fields if available in your context
 }
 
-// Assuming ContextGeneral provides these types
 interface ContextGeneralType {
   firestore: Firestore | null;
   storage: FirebaseStorage | null;
   setLoader: React.Dispatch<React.SetStateAction<boolean>> | null;
-  setCursos: React.Dispatch<React.SetStateAction<Curso[] | null>> | null;
+  setCursos: React.Dispatch<React.SetStateAction<(Curso & { id: string })[] | null>> | null;
   alumnos?: Alumno[];
   usuarios?: Alumno[];
   users?: Alumno[];
 }
 
 /* ----------------- small helpers ----------------- */
-// Unique ID for units/lessons
 const makeId = (): string => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-// Basic URL validator
 const isValidUrl = (s: string): boolean => {
   try {
     const u = new URL(s);
@@ -155,41 +159,35 @@ const isValidUrl = (s: string): boolean => {
   }
 };
 
-// Upload a file to Storage and return its download URL
-
 export const uploadFile = async (path: string, file: File): Promise<string> => {
   const storageRef = ref(storage, path);
   await uploadBytes(storageRef, file);
   return await getDownloadURL(storageRef);
 };
 
-
-interface CrearCursoProps {
+/* ----------------- Props ----------------- */
+interface EditarCursoProps {
+  courseId: string;
   onClose?: () => void;
 }
-
-function CrearCurso({ onClose }: CrearCursoProps) {
-  // Context: Firestore/Storage, loaders, global courses state
+function EditarCurso({ courseId, onClose }: EditarCursoProps) {
+  // Firestore a usar
   const firestore = db;
 
-  // Full context (to read students list)
+  // Contexto
   const ctx = useContext(ContextGeneral) as ContextGeneralType;
-  const { firestore: firestoreCtx, storage: storageCtx, setLoader, setCursos } = ctx || {};
+  const { setLoader, setCursos } = ctx || {};
   const safeSetLoader = typeof setLoader === "function" ? setLoader : () => {};
-const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
+  const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
 
-
-
-  /* =========================
-     Students from Context
-     ========================= */
+  // Alumnos del contexto (para el tab cursantes)
   const alumnos: Alumno[] = useMemo(
     () => (ctx?.alumnos || ctx?.usuarios || ctx?.users || []).filter(Boolean),
     [ctx]
   );
 
   /* =========================
-     Main Tabs (parity)
+     Tabs principales
      ========================= */
   const MAIN_TABS = [
     { id: "general", label: "General", icon: <FiBookOpen /> },
@@ -202,7 +200,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
   const [activeMainTab, setActiveMainTab] = useState<string>("general");
 
   /* =========================
-     Course state (level course)
+     Estado del curso
      ========================= */
   const [curso, setCurso] = useState<Curso>({
     titulo: "",
@@ -213,41 +211,145 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
     videoPresentacion: "",
     urlImagen: "",
     precio: { monto: "", montoDescuento: "", descuentoActivo: false },
-    cursantes: [], // selected emails
+    cursantes: [],
     textoFinalCurso: "",
-    textoFinalCursoVideoUrl: "", // NEW: optional closing video
+    textoFinalCursoVideoUrl: "",
   });
 
-  /* =========================
-     Units / Lessons
-     ========================= */
   const [unidades, setUnidades] = useState<Unidad[]>([]);
   const [activeUnidad, setActiveUnidad] = useState<number>(0);
-  const [activeUnitTab, setActiveUnitTab] = useState<"datos" | "lecciones" | "cierre">("datos"); // 'datos' | 'lecciones' | 'cierre'
+  const [activeUnitTab, setActiveUnitTab] = useState<"datos" | "lecciones" | "cierre">("datos");
   const [activeLeccion, setActiveLeccion] = useState<number>(0);
 
-  /* =========================
-     Exam & Capstone (parity)
-     ========================= */
-  const [examenFinal, setExamenFinal] = useState<ExamenFinal>({
-    introTexto: "",
-    ejercicios: [], // parity: Exercises at course level
-  });
+  const [examenFinal, setExamenFinal] = useState<ExamenFinal>({ introTexto: "", ejercicios: [] });
+  const [capstone, setCapstone] = useState<Capstone>({ videoUrl: "", instrucciones: "", checklist: [] });
 
-  const [capstone, setCapstone] = useState<Capstone>({
-    videoUrl: "", // NEW: own video for project
-    instrucciones: "",
-    checklist: [],
-  });
-
+  // Para uploads
   const [uploading, setUploading] = useState<boolean>(false);
 
-  /* =========================
-     Students (UI)
-     ========================= */
+  // Para búsqueda de alumnos
   const [searchAlumno, setSearchAlumno] = useState<string>("");
 
+  // Para calcular delta de cursantes al guardar
+  const [originalCursantes, setOriginalCursantes] = useState<string[]>([]);
+
   /* =========================
+     CARGA del curso (getDoc)
+     ========================= */
+  useEffect(() => {
+    let mounted = true;
+
+    const load = async () => {
+      if (!courseId) return;
+      try {
+        safeSetLoader(true);
+        const ref = doc(firestore, "cursos", courseId);
+        const snap = await getDoc(ref);
+
+        if (!snap.exists()) {
+          toast.error("Course not found");
+          return;
+        }
+
+        const data = snap.data() as Partial<Curso>;
+
+        // Normalizar con defaults
+        const unidadesFromDb: Unidad[] = (data.unidades || []).map((u: any) => ({
+          id: u?.id || makeId(),
+          titulo: u?.titulo || "",
+          descripcion: u?.descripcion || "",
+          urlVideo: "", // se fuerza vacío
+          duracion: typeof u?.duracion === "number" ? u.duracion : u?.duracion ? Number(u.duracion) : undefined,
+          urlImagen: u?.urlImagen || "",
+          ejercicios: Array.isArray(u?.ejercicios) ? u?.ejercicios : [],
+          textoCierre: u?.textoCierre || "",
+          lecciones: Array.isArray(u?.lecciones)
+            ? u.lecciones.map((l: any) => ({
+                id: l?.id || makeId(),
+                titulo: l?.titulo || "",
+                texto: l?.texto || "",
+                urlVideo: l?.urlVideo || "",
+                urlImagen: l?.urlImagen || "",
+                pdfUrl: l?.pdfUrl || "",
+                ejercicios: Array.isArray(l?.ejercicios) ? l?.ejercicios : [],
+                finalMessage: l?.finalMessage || "",
+              }))
+            : [],
+          closing: u?.closing
+            ? {
+                examIntro: u?.closing?.examIntro || "",
+                examExercises: Array.isArray(u?.closing?.examExercises) ? u?.closing?.examExercises : [],
+                closingText: u?.closing?.closingText || "",
+              }
+            : undefined,
+        }));
+
+        const precioFromDb: Precio = {
+          monto: (data.precio as any)?.monto ?? "",
+          montoDescuento: (data.precio as any)?.montoDescuento ?? "",
+          descuentoActivo: !!(data.precio as any)?.descuentoActivo,
+        };
+
+        const cursoNormalized: Curso = {
+          titulo: data.titulo || "",
+          descripcion: data.descripcion || "",
+          nivel: data.nivel || "",
+          categoria: data.categoria || "",
+          publico: data.publico ?? true,
+          videoPresentacion: data.videoPresentacion || "",
+          urlImagen: data.urlImagen || "",
+          precio: precioFromDb,
+          cursantes: Array.isArray(data.cursantes) ? data.cursantes : [],
+          textoFinalCurso: data.textoFinalCurso || "",
+          textoFinalCursoVideoUrl: data.textoFinalCursoVideoUrl || "",
+          unidades: unidadesFromDb,
+          examenFinal: {
+            introTexto: data.examenFinal?.introTexto || "",
+            ejercicios: Array.isArray(data.examenFinal?.ejercicios) ? data.examenFinal?.ejercicios : [],
+          },
+          capstone: {
+            videoUrl: data.capstone?.videoUrl || "",
+            instrucciones: data.capstone?.instrucciones || "",
+            checklist: Array.isArray(data.capstone?.checklist) ? data.capstone?.checklist : [],
+          },
+          creadoEn: data.creadoEn as Timestamp | undefined,
+        };
+
+        if (!mounted) return;
+
+        setCurso({
+          titulo: cursoNormalized.titulo,
+          descripcion: cursoNormalized.descripcion,
+          nivel: cursoNormalized.nivel,
+          categoria: cursoNormalized.categoria,
+          publico: cursoNormalized.publico,
+          videoPresentacion: cursoNormalized.videoPresentacion,
+          urlImagen: cursoNormalized.urlImagen,
+          precio: cursoNormalized.precio,
+          cursantes: cursoNormalized.cursantes,
+          textoFinalCurso: cursoNormalized.textoFinalCurso,
+          textoFinalCursoVideoUrl: cursoNormalized.textoFinalCursoVideoUrl,
+        });
+
+        setUnidades(cursoNormalized.unidades || []);
+        setExamenFinal(cursoNormalized.examenFinal || { introTexto: "", ejercicios: [] });
+        setCapstone(cursoNormalized.capstone || { videoUrl: "", instrucciones: "", checklist: [] });
+        setOriginalCursantes(cursoNormalized.cursantes || []);
+      } catch (e) {
+        console.error(e);
+        toast.error("Error loading the course");
+      } finally {
+        safeSetLoader(false);
+      }
+    };
+
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [courseId, firestore, safeSetLoader]);
+
+    /* =========================
      Handlers - Course
      ========================= */
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
@@ -259,7 +361,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
   };
 
   const handlePrecioChange = (field: keyof Precio, e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+    const v = e.target.type === "checkbox" ? (e.target as any).checked : e.target.value;
     setCurso((p) => ({ ...p, precio: { ...p.precio, [field]: v } }));
   };
 
@@ -267,17 +369,17 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
      Units
      ========================= */
   const agregarUnidad = () => {
-    // NOTE: urlVideo kept for backward-compat but WILL be forced "" on save
     const nueva: Unidad = {
       id: makeId(),
       titulo: "",
       descripcion: "",
-      urlVideo: "", // 🧹 removed from UI usage
-      duracion: undefined, // optional
+      urlVideo: "",
+      duracion: undefined,
       urlImagen: "",
       ejercicios: [],
       textoCierre: "",
       lecciones: [],
+      closing: { examIntro: "", examExercises: [], closingText: "" },
     };
     setUnidades((p) => [...p, nueva]);
     setTimeout(() => {
@@ -311,25 +413,18 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
       urlImagen: "",
       pdfUrl: "",
       ejercicios: [],
-      finalMessage: "", // NEW: message after finishing exercises
+      finalMessage: "",
     };
     setUnidades((p) =>
-      p.map((u, i) =>
-        i === unidadIdx ? { ...u, lecciones: [...u.lecciones, nueva] } : u
-      )
+      p.map((u, i) => (i === unidadIdx ? { ...u, lecciones: [...u.lecciones, nueva] } : u))
     );
-    setTimeout(
-      () => setActiveLeccion(unidades[unidadIdx]?.lecciones?.length || 0),
-      0
-    );
+    setTimeout(() => setActiveLeccion(unidades[unidadIdx]?.lecciones?.length || 0), 0);
   };
 
   const borrarLeccion = (unidadIdx: number, leccionIdx: number) => {
     setUnidades((p) =>
       p.map((u, i) =>
-        i === unidadIdx
-          ? { ...u, lecciones: u.lecciones.filter((_, j) => j !== leccionIdx) }
-          : u
+        i === unidadIdx ? { ...u, lecciones: u.lecciones.filter((_, j) => j !== leccionIdx) } : u
       )
     );
     setActiveLeccion((i) => (i > 0 ? i - 1 : 0));
@@ -341,9 +436,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
         i === unidadIdx
           ? {
               ...u,
-              lecciones: u.lecciones.map((l, j) =>
-                j === leccionIdx ? { ...l, ...patch } : l
-              ),
+              lecciones: u.lecciones.map((l, j) => (j === leccionIdx ? { ...l, ...patch } : l)),
             }
           : u
       )
@@ -355,14 +448,11 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
      ========================= */
   const onUploadMiniaturaCurso = async (file: File | undefined) => {
     if (!file) return;
-    if (!file.type.startsWith("image/"))
-      return toast.error("Upload a valid image");
+    if (!file.type.startsWith("image/")) return toast.error("Upload a valid image");
     try {
       setUploading(true);
-      const url = await uploadFile(
-  `cursos/lecciones/pdf/${Date.now()}_${file.name}`,
-  file
-);
+      // mantenemos la misma ruta que tenías en crear (paridad)
+      const url = await uploadFile(`cursos/lecciones/pdf/${Date.now()}_${file.name}`, file);
       setCurso((p) => ({ ...p, urlImagen: url }));
       toast.success("Thumbnail uploaded");
     } catch (e: any) {
@@ -375,14 +465,10 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
 
   const onUploadPdfLeccion = async (unidadIdx: number, leccionIdx: number, file: File | undefined) => {
     if (!file) return;
-    if (file.type !== "application/pdf")
-      return toast.error("The file must be a PDF");
+    if (file.type !== "application/pdf") return toast.error("The file must be a PDF");
     try {
       setUploading(true);
-      const url = await uploadFile(
-        `cursos/lecciones/pdf/${Date.now()}_${file.name}`,
-        file
-      );
+      const url = await uploadFile(`cursos/lecciones/pdf/${Date.now()}_${file.name}`, file);
       updateLeccion(unidadIdx, leccionIdx, { pdfUrl: url });
       toast.success("PDF uploaded");
     } catch (e: any) {
@@ -428,132 +514,127 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
     });
   }, [alumnos, searchAlumno]);
 
-  /* =========================
-     Save
+    /* =========================
+     Guardar cambios
      ========================= */
-    //  const safeSetLoader = setLoader || (() => {});
-    console.log("🧩 ContextGeneral desde CrearCurso:", { firestore, storage, setLoader, setCursos });
-
-
   const handleSubmit = async (e: React.FormEvent) => {
-  e.preventDefault();
-  console.log("🔹 [DEBUG] Iniciando handleSubmit...");
+    e.preventDefault();
 
-  // Verificamos Firestore
-  console.log("🔹 [DEBUG] firestore:", firestore);
-  console.log("🔹 [DEBUG] db:", db);
-
-  if (!firestore && !db) {
-    toast.error("Firestore no inicializado");
-    console.error("❌ [ERROR] Ninguna instancia de Firestore disponible.");
-    return;
-  }
-
-  const dbToUse = firestore || db; // usa lo que esté disponible
-
-  // Validaciones básicas
-  if (!curso.titulo?.trim()) {
-    console.warn("⚠️ Falta título de curso");
-    return toast.error("The course needs a title");
-  }
-  if (!Array.isArray(unidades) || unidades.length === 0) {
-    console.warn("⚠️ Falta unidad");
-    return toast.error("Add at least one unit");
-  }
-
-  console.log("🔹 [DEBUG] Pasó validaciones iniciales");
-
-  // Normalizamos datos
-  const unidadesToSave: Unidad[] = unidades.map((u) => ({
-    id: u.id || makeId(),
-    titulo: u.titulo || "",
-    descripcion: u.descripcion || "",
-    urlVideo: "",
-    urlImagen: u.urlImagen || "",
-    duracion: u.duracion ? Number(u.duracion) : undefined,
-    ejercicios: [],
-    textoCierre: u.textoCierre || "",
-    lecciones: (u.lecciones || []).map((l) => ({
-      id: l.id || makeId(),
-      titulo: l.titulo || "",
-      texto: l.texto || "",
-      urlVideo: l.urlVideo || "",
-      urlImagen: l.urlImagen || "",
-      pdfUrl: l.pdfUrl || "",
-      ejercicios: Array.isArray(l.ejercicios) ? l.ejercicios : [],
-      finalMessage: l.finalMessage || "",
-    })),
-  }));
-
-  const payload = {
-    ...curso,
-    unidades: unidadesToSave,
-    examenFinal,
-    capstone,
-    creadoEn: serverTimestamp(),
-  };
-
-  console.log("📦 [DEBUG] Payload final a guardar:", payload);
-
- safeSetLoader(true);
-  try {
-    // 🔥 Paso 1: Guardar curso
-    console.log("🚀 [DEBUG] Intentando guardar curso...");
-    const refCurso = await addDoc(collection(dbToUse, "cursos"), payload);
-    console.log("✅ [DEBUG] Curso creado con ID:", refCurso.id);
-
-    // 🔥 Paso 2: Enrolar estudiantes
-    const emailsSel = Array.isArray(payload.cursantes)
-      ? payload.cursantes
-      : [];
-
-    console.log("📧 [DEBUG] Estudiantes a enrolar:", emailsSel);
-
-    if (emailsSel.length > 0) {
-      const batch = writeBatch(dbToUse);
-      emailsSel
-        .map((e) => String(e || "").trim().toLowerCase())
-        .filter((e) => e && e.includes("@"))
-        .forEach((emailLc) => {
-          const alumnoRef = doc(dbToUse, "alumnos", emailLc);
-          batch.set(
-            alumnoRef,
-            { cursosAdquiridos: arrayUnion(refCurso.id) },
-            { merge: true }
-          );
-        });
-      await batch.commit();
-      console.log("✅ [DEBUG] Batch de alumnos actualizado");
+    if (!firestore) {
+      toast.error("Firestore no inicializado");
+      return;
     }
 
-    // 🔥 Paso 3: Actualizar estado local
-    const newCursoForState: Curso & { id: string } = {
-      id: refCurso.id,
-      ...payload,
-      creadoEn: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 } as Timestamp,
+    if (!curso.titulo?.trim()) return toast.error("The course needs a title");
+    if (!Array.isArray(unidades) || unidades.length === 0) return toast.error("Add at least one unit");
+
+    // Normalizar unidades/lecciones
+    const unidadesToSave: Unidad[] = unidades.map((u) => ({
+      id: u.id || makeId(),
+      titulo: u.titulo || "",
+      descripcion: u.descripcion || "",
+      urlVideo: "",
+      urlImagen: u.urlImagen || "",
+      duracion: u.duracion ? Number(u.duracion) : undefined,
+      ejercicios: Array.isArray(u.ejercicios) ? u.ejercicios : [],
+      textoCierre: u.textoCierre || "",
+      lecciones: (u.lecciones || []).map((l) => ({
+        id: l.id || makeId(),
+        titulo: l.titulo || "",
+        texto: l.texto || "",
+        urlVideo: l.urlVideo || "",
+        urlImagen: l.urlImagen || "",
+        pdfUrl: l.pdfUrl || "",
+        ejercicios: Array.isArray(l.ejercicios) ? l.ejercicios : [],
+        finalMessage: l.finalMessage || "",
+      })),
+      closing: u.closing
+        ? {
+            examIntro: u.closing.examIntro || "",
+            examExercises: Array.isArray(u.closing.examExercises) ? u.closing.examExercises : [],
+            closingText: u.closing.closingText || "",
+          }
+        : undefined,
+    }));
+
+    // Payload a guardar (sin creadoEn: se conserva)
+    const payloadToUpdate = {
+      ...curso,
+      precio: {
+        monto: curso.precio?.monto === "" ? "" : Number(curso.precio?.monto),
+        montoDescuento: curso.precio?.montoDescuento === "" ? "" : Number(curso.precio?.montoDescuento),
+        descuentoActivo: !!curso.precio?.descuentoActivo,
+      },
+      unidades: unidadesToSave,
+      examenFinal,
+      capstone,
     };
-    console.log("🔹 [DEBUG] Actualizando estado local...", newCursoForState);
-   safeSetCursos((prev) => {
 
-      if (!Array.isArray(prev)) return [newCursoForState];
-      if (prev.some((c) => (c as any).id === newCursoForState.id)) return prev;
-      return [newCursoForState, ...prev];
-    });
+    safeSetLoader(true);
+    try {
+      // 1) updateDoc del curso
+      const cursoRef = doc(firestore, "cursos", courseId);
+      await updateDoc(cursoRef, payloadToUpdate as any);
 
-    toast.success("✅ Course created successfully");
-    onClose?.();
-  } catch (err: any) {
-    console.error("❌ [ERROR] Error creando curso:", err);
-    toast.error("Error creating the course");
-  } finally {
-    console.log("🔹 [DEBUG] handleSubmit finalizado");
-    safeSetLoader(false);
-  }
-};
+      // 2) sincronizar alumnos (delta: nuevos => arrayUnion; removidos => arrayRemove)
+      const before = new Set(originalCursantes.map((e) => (e || "").toLowerCase().trim()).filter(Boolean));
+      const after = new Set((curso.cursantes || []).map((e) => (e || "").toLowerCase().trim()).filter(Boolean));
 
+      const added: string[] = [];
+      const removed: string[] = [];
+
+      after.forEach((e) => {
+        if (!before.has(e)) added.push(e);
+      });
+      before.forEach((e) => {
+        if (!after.has(e)) removed.push(e);
+      });
+
+      if (added.length > 0 || removed.length > 0) {
+        const batch = writeBatch(firestore);
+        const cursosCollection = collection(firestore, "alumnos");
+
+        // Altas
+        added.forEach((email) => {
+          const alumnoRef = doc(cursosCollection, email);
+          batch.set(alumnoRef, { cursosAdquiridos: arrayUnion(courseId) }, { merge: true });
+        });
+
+        // Bajas
+        removed.forEach((email) => {
+          const alumnoRef = doc(cursosCollection, email);
+          batch.set(alumnoRef, { cursosAdquiridos: arrayRemove(courseId) }, { merge: true });
+        });
+
+        await batch.commit();
+      }
+
+      // 3) Actualizar estado local setCursos (reemplazar)
+      safeSetCursos((prev) => {
+        if (!Array.isArray(prev)) return prev;
+        return prev.map((c) =>
+          (c as any).id === courseId
+            ? ({
+                ...(c as any),
+                ...payloadToUpdate,
+              } as any)
+            : c
+        );
+      });
+
+      setOriginalCursantes(curso.cursantes || []);
+      toast.success("✅ Changes saved");
+      onClose?.();
+    } catch (err) {
+      console.error(err);
+      toast.error("Error saving changes");
+    } finally {
+      safeSetLoader(false);
+    }
+  };
 
   /* =========================
-     UX: ESC to close + body scroll lock
+     UX: ESC para cerrar + bloquear scroll
      ========================= */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose?.();
@@ -571,7 +652,6 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
     { value: "intermedio", label: "Intermediate" },
     { value: "avanzado", label: "Advanced" },
   ];
-
   /* =========================
      RENDER
      ========================= */
@@ -591,9 +671,9 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
           </button>
 
           <div className="max-w-4xl">
-            <h2 className="text-2xl font-bold mb-1">Create Course</h2>
+            <h2 className="text-2xl font-bold mb-1">Edit Course</h2>
             <p className="text-blue-100 text-sm mb-4">
-              Define your course structure, content, and settings
+              Update your course structure, content, and settings
             </p>
 
             {/* NAV */}
@@ -631,18 +711,14 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                     <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
                       <FiBookOpen className="w-5 h-5 text-blue-600" />
                     </div>
-                    <h3 className="text-xl font-semibold text-slate-900">
-                      Course Information
-                    </h3>
+                    <h3 className="text-xl font-semibold text-slate-900">Course Information</h3>
                   </div>
 
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                     {/* Basics */}
                     <div className="lg:col-span-2 space-y-4">
                       <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-700">
-                          Course title
-                        </label>
+                        <label className="text-sm font-medium text-slate-700">Course title</label>
                         <input
                           type="text"
                           name="titulo"
@@ -655,9 +731,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                       </div>
 
                       <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-700">
-                          Description
-                        </label>
+                        <label className="text-sm font-medium text-slate-700">Description</label>
                         <textarea
                           name="descripcion"
                           placeholder="Describe what students will learn in this course..."
@@ -671,9 +745,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
 
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-slate-700">
-                            Level
-                          </label>
+                          <label className="text-sm font-medium text-slate-700">Level</label>
                           <div className="relative">
                             <select
                               name="nivel"
@@ -696,9 +768,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                         </div>
 
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-slate-700">
-                            Category
-                          </label>
+                          <label className="text-sm font-medium text-slate-700">Category</label>
                           <div className="relative">
                             <FiTag className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
                             <input
@@ -723,13 +793,9 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                         />
                         <div className="flex items-center gap-2">
                           <FiGlobe className="w-4 h-4 text-slate-600" />
-                          <label className="text-sm font-medium text-slate-700">
-                            Public course
-                          </label>
+                          <label className="text-sm font-medium text-slate-700">Public course</label>
                         </div>
-                        <span className="text-xs text-slate-500">
-                          Users will be able to see and access the course
-                        </span>
+                        <span className="text-xs text-slate-500">Users will be able to see and access the course</span>
                       </div>
                     </div>
 
@@ -751,18 +817,17 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                             className="w-full p-3 pl-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                           />
                         </div>
-                        {curso.videoPresentacion &&
-                          isValidUrl(curso.videoPresentacion) && (
-                            <div className="aspect-video bg-black/5 rounded-xl overflow-hidden">
-                              <iframe
-                                src={curso.videoPresentacion}
-                                title="Intro video"
-                                className="w-full h-full"
-                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                allowFullScreen
-                              />
-                            </div>
-                          )}
+                        {curso.videoPresentacion && isValidUrl(curso.videoPresentacion) && (
+                          <div className="aspect-video bg-black/5 rounded-xl overflow-hidden">
+                            <iframe
+                              src={curso.videoPresentacion}
+                              title="Intro video"
+                              className="w-full h-full"
+                              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                              allowFullScreen
+                            />
+                          </div>
+                        )}
                       </div>
 
                       {/* Thumbnail */}
@@ -771,34 +836,14 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                           <FiImage className="w-4 h-4" /> Course thumbnail
                         </label>
 
-                        <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:border-slate-400 hover:bg-slate-50 transition-all">
-                          <FiUpload className="w-4 h-4 text-slate-500" />
-                          <span className="text-sm text-slate-600">
-                            {uploading ? "Uploading..." : "Upload image"}
-                          </span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) =>
-                              onUploadMiniaturaCurso(e.target.files?.[0])
-                            }
-                            disabled={uploading}
-                          />
-                        </label>
-
+                        {/* (paridad) input de URL */}
                         <div className="relative">
                           <FiLink2 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                           <input
                             type="url"
                             placeholder="or paste an image URL https://"
                             value={curso.urlImagen}
-                            onChange={(e) =>
-                              setCurso((p) => ({
-                                ...p,
-                                urlImagen: e.target.value,
-                              }))
-                            }
+                            onChange={(e) => setCurso((p) => ({ ...p, urlImagen: e.target.value }))}
                             className="w-full p-3 pl-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                           />
                         </div>
@@ -810,6 +855,21 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                             className="w-full rounded-xl border object-cover max-h-48"
                           />
                         )}
+
+                        {/* Si quisieras habilitar upload por archivo, descomenta: */}
+                        {/*
+                        <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:border-slate-400 hover:bg-slate-50 transition-all">
+                          <FiUpload className="w-4 h-4 text-slate-500" />
+                          <span className="text-sm text-slate-600">{uploading ? "Uploading..." : "Upload image"}</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={(e) => onUploadMiniaturaCurso(e.target.files?.[0])}
+                            disabled={uploading}
+                          />
+                        </label>
+                        */}
                       </div>
                     </div>
                   </div>
@@ -821,16 +881,12 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                     <div className="w-10 h-10 bg-emerald-100 rounded-lg flex items-center justify-center">
                       <FiDollarSign className="w-5 h-5 text-emerald-600" />
                     </div>
-                    <h3 className="text-xl font-semibold text-slate-900">
-                      Pricing Settings
-                    </h3>
+                    <h3 className="text-xl font-semibold text-slate-900">Pricing Settings</h3>
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-slate-700">
-                        Regular price
-                      </label>
+                      <label className="text-sm font-medium text-slate-700">Regular price</label>
                       <input
                         type="number"
                         min="0"
@@ -843,18 +899,14 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                     </div>
 
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-slate-700">
-                        Discounted price
-                      </label>
+                      <label className="text-sm font-medium text-slate-700">Discounted price</label>
                       <input
                         type="number"
                         min="0"
                         step="0.01"
                         placeholder="29.99"
                         value={curso.precio.montoDescuento}
-                        onChange={(e) =>
-                          handlePrecioChange("montoDescuento", e)
-                        }
+                        onChange={(e) => handlePrecioChange("montoDescuento", e)}
                         className="w-full p-4 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
                       />
                     </div>
@@ -863,18 +915,12 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                       <input
                         type="checkbox"
                         checked={!!curso.precio.descuentoActivo}
-                        onChange={(e) =>
-                          handlePrecioChange("descuentoActivo", e)
-                        }
+                        onChange={(e) => handlePrecioChange("descuentoActivo", e)}
                         className="h-5 w-5 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500"
                       />
                       <div className="text-sm">
-                        <div className="font-medium text-slate-700">
-                          Discount active
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          Apply a reduced price
-                        </div>
+                        <div className="font-medium text-slate-700">Discount active</div>
+                        <div className="text-xs text-slate-500">Apply a reduced price</div>
                       </div>
                     </label>
                   </div>
@@ -890,9 +936,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                     <div className="w-10 h-10 bg-indigo-100 rounded-lg flex items-center justify-center">
                       <FiLayers className="w-5 h-5 text-indigo-600" />
                     </div>
-                    <h3 className="text-xl font-semibold text-slate-900">
-                      Course Content: Units & Lessons
-                    </h3>
+                    <h3 className="text-xl font-semibold text-slate-900">Course Content: Units & Lessons</h3>
                   </div>
 
                   {unidades.length === 0 ? (
@@ -994,34 +1038,22 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                             {activeUnitTab === "datos" && (
                               <div className="space-y-4">
                                 <div className="space-y-2">
-                                  <label className="text-sm font-medium text-slate-700">
-                                    Unit title
-                                  </label>
+                                  <label className="text-sm font-medium text-slate-700">Unit title</label>
                                   <input
                                     type="text"
                                     placeholder="e.g., Introduction to JavaScript Basics"
                                     value={unidades[activeUnidad]?.titulo || ""}
-                                    onChange={(e) =>
-                                      updateUnidad(activeUnidad, {
-                                        titulo: e.target.value,
-                                      })
-                                    }
+                                    onChange={(e) => updateUnidad(activeUnidad, { titulo: e.target.value })}
                                     className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                                     required
                                   />
                                 </div>
                                 <div className="space-y-2">
-                                  <label className="text-sm font-medium text-slate-700">
-                                    Description (optional)
-                                  </label>
+                                  <label className="text-sm font-medium text-slate-700">Description (optional)</label>
                                   <textarea
                                     placeholder="Brief description of this unit"
                                     value={unidades[activeUnidad]?.descripcion || ""}
-                                    onChange={(e) =>
-                                      updateUnidad(activeUnidad, {
-                                        descripcion: e.target.value,
-                                      })
-                                    }
+                                    onChange={(e) => updateUnidad(activeUnidad, { descripcion: e.target.value })}
                                     className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
                                     rows={3}
                                   />
@@ -1053,11 +1085,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                       type="url"
                                       placeholder="https://example.com/unit-image.jpg"
                                       value={unidades[activeUnidad]?.urlImagen || ""}
-                                      onChange={(e) =>
-                                        updateUnidad(activeUnidad, {
-                                          urlImagen: e.target.value,
-                                        })
-                                      }
+                                      onChange={(e) => updateUnidad(activeUnidad, { urlImagen: e.target.value })}
                                       className="w-full p-3 pl-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                                     />
                                   </div>
@@ -1118,17 +1146,13 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                         {activeLeccion === lIdx && (
                                           <div className="space-y-3 pt-3 border-t border-slate-100 mt-3">
                                             <div className="space-y-2">
-                                              <label className="text-sm font-medium text-slate-700">
-                                                Lesson title
-                                              </label>
+                                              <label className="text-sm font-medium text-slate-700">Lesson title</label>
                                               <input
                                                 type="text"
                                                 placeholder="e.g., Variables and Data Types"
                                                 value={l.titulo}
                                                 onChange={(e) =>
-                                                  updateLeccion(activeUnidad, lIdx, {
-                                                    titulo: e.target.value,
-                                                  })
+                                                  updateLeccion(activeUnidad, lIdx, { titulo: e.target.value })
                                                 }
                                                 className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                                 required
@@ -1142,9 +1166,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                                 placeholder="Detailed text for the lesson"
                                                 value={l.texto}
                                                 onChange={(e) =>
-                                                  updateLeccion(activeUnidad, lIdx, {
-                                                    texto: e.target.value,
-                                                  })
+                                                  updateLeccion(activeUnidad, lIdx, { texto: e.target.value })
                                                 }
                                                 className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                                                 rows={4}
@@ -1161,9 +1183,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                                   placeholder="https://youtube.com/watch?v=..."
                                                   value={l.urlVideo}
                                                   onChange={(e) =>
-                                                    updateLeccion(activeUnidad, lIdx, {
-                                                      urlVideo: e.target.value,
-                                                    })
+                                                    updateLeccion(activeUnidad, lIdx, { urlVideo: e.target.value })
                                                   }
                                                   className="w-full p-3 pl-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                                 />
@@ -1194,11 +1214,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                                   accept="application/pdf"
                                                   className="hidden"
                                                   onChange={(e) =>
-                                                    onUploadPdfLeccion(
-                                                      activeUnidad,
-                                                      lIdx,
-                                                      e.target.files?.[0]
-                                                    )
+                                                    onUploadPdfLeccion(activeUnidad, lIdx, e.target.files?.[0])
                                                   }
                                                   disabled={uploading}
                                                 />
@@ -1215,7 +1231,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                               )}
                                             </div>
 
-                                            {/* Lesson Exercises (using Exercises component) */}
+                                            {/* Lesson Exercises */}
                                             <div className="space-y-2">
                                               <label className="text-sm font-medium text-slate-700">
                                                 Exercises (optional)
@@ -1223,9 +1239,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                               <Exercises
                                                 exercises={l.ejercicios}
                                                 setExercises={(newExercises: Ejercicio[]) =>
-                                                  updateLeccion(activeUnidad, lIdx, {
-                                                    ejercicios: newExercises,
-                                                  })
+                                                  updateLeccion(activeUnidad, lIdx, { ejercicios: newExercises })
                                                 }
                                               />
                                             </div>
@@ -1238,9 +1252,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                                                 placeholder="Message to show after completing exercises"
                                                 value={l.finalMessage}
                                                 onChange={(e) =>
-                                                  updateLeccion(activeUnidad, lIdx, {
-                                                    finalMessage: e.target.value,
-                                                  })
+                                                  updateLeccion(activeUnidad, lIdx, { finalMessage: e.target.value })
                                                 }
                                                 className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                                                 rows={2}
@@ -1264,17 +1276,63 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
 
                             {/* Unit Closing Tab */}
                             {activeUnitTab === "cierre" && (
-                              <div className="space-y-4">
+                              <div className="space-y-6">
+                                {/* Examen final por unidad (paridad con tu UI) */}
+                                <div className="border border-slate-200 rounded-xl p-4 bg-white shadow-sm">
+                                  <h3 className="text-lg font-semibold text-slate-800 mb-3">
+                                    End Of Unit Summary Quiz
+                                  </h3>
+
+                                  <div className="space-y-2 mb-4">
+                                    <label className="text-sm font-medium text-slate-700">
+                                      Introductory Text for Exam (optional)
+                                    </label>
+                                    <textarea
+                                      placeholder="Instructions or introduction for the final exam"
+                                      value={unidades[activeUnidad]?.closing?.examIntro || ""}
+                                      onChange={(e) =>
+                                        updateUnidad(activeUnidad, {
+                                          closing: {
+                                            ...(unidades[activeUnidad]?.closing || {}),
+                                            examIntro: e.target.value,
+                                          },
+                                        })
+                                      }
+                                      className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                                      rows={3}
+                                    />
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <label className="text-sm font-medium text-slate-700">Exam Exercises</label>
+                                    <Exercises
+                                      exercises={unidades[activeUnidad]?.closing?.examExercises || []}
+                                      setExercises={(updated) =>
+                                        updateUnidad(activeUnidad, {
+                                          closing: {
+                                            ...(unidades[activeUnidad]?.closing || {}),
+                                            examExercises: updated,
+                                          },
+                                        })
+                                      }
+                                    />
+                                  </div>
+                                </div>
+
+                                {/* Texto de cierre */}
                                 <div className="space-y-2">
                                   <label className="text-sm font-medium text-slate-700">
                                     Closing Text for Unit (optional)
                                   </label>
                                   <textarea
-                                    placeholder="Text displayed after all lessons in this unit are completed"
-                                    value={unidades[activeUnidad]?.textoCierre || ""}
+                                    placeholder="Text displayed after all lessons and exams in this unit are completed"
+                                    value={unidades[activeUnidad]?.closing?.closingText || ""}
                                     onChange={(e) =>
                                       updateUnidad(activeUnidad, {
-                                        textoCierre: e.target.value,
+                                        closing: {
+                                          ...(unidades[activeUnidad]?.closing || {}),
+                                          closingText: e.target.value,
+                                        },
                                       })
                                     }
                                     className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
@@ -1299,35 +1357,25 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                   <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center">
                     <FiClipboard className="w-5 h-5 text-purple-600" />
                   </div>
-                  <h3 className="text-xl font-semibold text-slate-900">
-                    Final Exam
-                  </h3>
+                  <h3 className="text-xl font-semibold text-slate-900">Final Exam</h3>
                 </div>
 
                 <div className="space-y-4">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">
-                      Introductory Text for Exam
-                    </label>
+                    <label className="text-sm font-medium text-slate-700">Introductory Text for Exam</label>
                     <textarea
                       placeholder="Instructions or introduction for the final exam"
                       value={examenFinal.introTexto}
-                      onChange={(e) =>
-                        setExamenFinal((p) => ({ ...p, introTexto: e.target.value }))
-                      }
+                      onChange={(e) => setExamenFinal((p) => ({ ...p, introTexto: e.target.value }))}
                       className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent resize-none"
                       rows={4}
                     />
                   </div>
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">
-                      Exam Exercises
-                    </label>
+                    <label className="text-sm font-medium text-slate-700">Exam Exercises</label>
                     <Exercises
                       exercises={examenFinal.ejercicios}
-                      setExercises={(newExercises: Ejercicio[]) =>
-                        setExamenFinal((p) => ({ ...p, ejercicios: newExercises }))
-                      }
+                      setExercises={(newExercises: Ejercicio[]) => setExamenFinal((p) => ({ ...p, ejercicios: newExercises }))}
                     />
                   </div>
                 </div>
@@ -1341,9 +1389,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                   <div className="w-10 h-10 bg-pink-100 rounded-lg flex items-center justify-center">
                     <FiLayers className="w-5 h-5 text-pink-600" />
                   </div>
-                  <h3 className="text-xl font-semibold text-slate-900">
-                    Capstone Project
-                  </h3>
+                  <h3 className="text-xl font-semibold text-slate-900">Capstone Project</h3>
                 </div>
 
                 <div className="space-y-4">
@@ -1357,9 +1403,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                         type="url"
                         placeholder="https://youtube.com/watch?v=..."
                         value={capstone.videoUrl}
-                        onChange={(e) =>
-                          setCapstone((p) => ({ ...p, videoUrl: e.target.value }))
-                        }
+                        onChange={(e) => setCapstone((p) => ({ ...p, videoUrl: e.target.value }))}
                         className="w-full p-3 pl-10 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent"
                       />
                     </div>
@@ -1377,24 +1421,18 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">
-                      Project Instructions
-                    </label>
+                    <label className="text-sm font-medium text-slate-700">Project Instructions</label>
                     <textarea
                       placeholder="Detailed instructions for the capstone project"
                       value={capstone.instrucciones}
-                      onChange={(e) =>
-                        setCapstone((p) => ({ ...p, instrucciones: e.target.value }))
-                      }
+                      onChange={(e) => setCapstone((p) => ({ ...p, instrucciones: e.target.value }))}
                       className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-pink-500 focus:border-transparent resize-none"
                       rows={5}
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">
-                      Project Checklist Items
-                    </label>
+                    <label className="text-sm font-medium text-slate-700">Project Checklist Items</label>
                     {capstone.checklist.map((item, idx) => (
                       <div key={idx} className="flex items-center gap-2">
                         <input
@@ -1427,9 +1465,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                     ))}
                     <button
                       type="button"
-                      onClick={() =>
-                        setCapstone((p) => ({ ...p, checklist: [...p.checklist, ""] }))
-                      }
+                      onClick={() => setCapstone((p) => ({ ...p, checklist: [...p.checklist, ""] }))}
                       className="flex items-center gap-2 p-3 bg-pink-50 text-pink-600 rounded-xl border border-dashed border-pink-200 hover:bg-pink-100 transition-colors w-full justify-center mt-2"
                     >
                       <FiPlus size={16} /> Add Checklist Item
@@ -1446,16 +1482,12 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                   <div className="w-10 h-10 bg-green-100 rounded-lg flex items-center justify-center">
                     <FiFlag className="w-5 h-5 text-green-600" />
                   </div>
-                  <h3 className="text-xl font-semibold text-slate-900">
-                    Course Closing
-                  </h3>
+                  <h3 className="text-xl font-semibold text-slate-900">Course Closing</h3>
                 </div>
 
                 <div className="space-y-4">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium text-slate-700">
-                      Final Course Message
-                    </label>
+                    <label className="text-sm font-medium text-slate-700">Final Course Message</label>
                     <textarea
                       placeholder="A message shown to students upon completing the entire course."
                       value={curso.textoFinalCurso}
@@ -1503,9 +1535,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                   <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center">
                     <FiUsers className="w-5 h-5 text-blue-600" />
                   </div>
-                  <h3 className="text-xl font-semibold text-slate-900">
-                    Manage Course Students
-                  </h3>
+                  <h3 className="text-xl font-semibold text-slate-900">Manage Course Students</h3>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1546,7 +1576,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                     </div>
                     <button
                       type="button"
-                      onClick={() => addAllFiltered(filteredAlumnos.map(a => a.email))}
+                      onClick={() => addAllFiltered(filteredAlumnos.map((a) => a.email))}
                       className="w-full flex items-center justify-center gap-2 p-3 bg-blue-50 text-blue-600 rounded-xl border border-dashed border-blue-200 hover:bg-blue-100 transition-colors"
                     >
                       <FiPlus size={16} /> Add All Filtered Students
@@ -1600,7 +1630,7 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                 disabled={uploading}
               >
                 <FiSave size={18} />
-                {uploading ? "Saving..." : "Create Course"}
+                {uploading ? "Saving..." : "Save Changes"}
               </button>
             </div>
           </form>
@@ -1610,4 +1640,4 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
   );
 }
 
-export default CrearCurso;
+export default EditarCurso;
