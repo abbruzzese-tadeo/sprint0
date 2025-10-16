@@ -1,7 +1,7 @@
 'use client';
 
 import { Card, CardContent } from '@/components/ui/card';
-import { CourseType } from '@/types/course';
+import { Course } from '@/types/course';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { motion } from 'framer-motion';
@@ -10,10 +10,10 @@ import Image from 'next/image';
 
 
 interface Props {
-  course: CourseType;
+  course: Course;
   onDelete: (id: string) => void;
   onToggleVisibility: (id: string) => void;
-  onEdit: (course: CourseType) => void;
+  onEdit: (course: Course) => void;
 }
 
 export default function CourseCard({ course, onDelete, onToggleVisibility, onEdit }: Props) {
