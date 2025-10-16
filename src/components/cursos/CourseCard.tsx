@@ -7,6 +7,8 @@ import { Badge } from '@/components/ui/badge';
 import { motion } from 'framer-motion';
 import { Eye, Edit, EyeOff, Trash2, Tag, Users, Layers, BookOpen, FileText, Clock, Calendar } from 'lucide-react';
 import Image from 'next/image';
+import { useRouter } from "next/navigation";
+
 
 
 interface Props {
@@ -16,8 +18,12 @@ interface Props {
   onEdit: (course: Course) => void;
 }
 
+
+
 export default function CourseCard({ course, onDelete, onToggleVisibility, onEdit }: Props) {
+  const router = useRouter();
   return (
+    
     <motion.div
       layout
       initial={{ opacity: 0, y: 20 }}
@@ -85,7 +91,11 @@ export default function CourseCard({ course, onDelete, onToggleVisibility, onEdi
             </div>
 
             <div className="flex flex-wrap gap-2 mt-4 sm:mt-0">
-              <Button variant="outline" className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                className="flex items-center gap-1"
+                onClick={() => router.push(`/dashboard/curso/${course.id}`)}
+              >
                 <Eye size={16} /> Ver detalles
               </Button>
 

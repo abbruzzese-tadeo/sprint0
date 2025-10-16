@@ -14,6 +14,7 @@ export default function ContextGeneralProvider({ children }: { children: React.R
     setCursos, // 👈 Y lo exportás acá
     loader,
     cursos,
+    
   };
 
   return (
