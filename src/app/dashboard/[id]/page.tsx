@@ -118,35 +118,65 @@ const userRef = doc(firestore, "alumnos", user.email);
   loadProgress();
 }, [firestore, user?.email, courseId]);
 
-// Guardar progreso en Firestore
-const saveProgress = useCallback(async (lessonId: string, data: LessonProgress) => {
-  if (!firestore || !user?.email || !courseId) return;
-  try {
-    const userRef = doc(firestore, "alumnos", user.email);
-    const updated = {
-      ...progress,
-      [lessonId]: { ...(progress[lessonId] || {}), ...data, updatedAt: Date.now() },
-    };
 
-    const payload = {
-      courseId,
-      progress: {
-        byLesson: updated,
-        lastActive: {
-          unitId: unidad?.id,
-          lessonId: leccion?.id,
+// Guardar progreso en Firestore (versión segura + avance inteligente)
+const saveProgress = useCallback(
+  async (
+    lessonId: string,
+    data: LessonProgress,
+    options?: { omitLastActive?: boolean; nextUnitId?: string; nextLessonId?: string }
+  ) => {
+    if (!firestore || !user?.email || !courseId) return;
+
+    try {
+      const userRef = doc(firestore, "alumnos", user.email);
+
+      const updated = {
+        ...progress,
+        [lessonId]: { ...(progress[lessonId] || {}), ...data, updatedAt: Date.now() },
+      };
+
+      const payload: any = {
+        courseId,
+        progress: {
+          byLesson: updated,
         },
-      },
-      updatedAt: serverTimestamp(),
-    };
+        updatedAt: serverTimestamp(),
+      };
 
-    await setDoc(userRef, { progress: { [courseId]: payload } }, { merge: true });
-    setProgress(updated);
-    console.log("Progreso guardado", updated);
-  } catch (err) {
-    console.error("Error al guardar progreso:", err);
-  }
-}, [firestore, user?.email, courseId, progress, unidad?.id, leccion?.id]);
+      // Solo agregamos lastActive si corresponde
+      let unitId = unidad?.id;
+      let lessonIdToSave = leccion?.id;
+
+      // Si viene nextUnitId / nextLessonId desde opciones (por ejemplo en el closing)
+      if (options?.nextUnitId && options?.nextLessonId) {
+        unitId = options.nextUnitId;
+        lessonIdToSave = options.nextLessonId;
+      }
+
+      const canSetLastActive =
+        !options?.omitLastActive &&
+        typeof unitId === "string" &&
+        typeof lessonIdToSave === "string";
+
+      if (canSetLastActive) {
+        payload.progress.lastActive = {
+          unitId,
+          lessonId: lessonIdToSave,
+        };
+      }
+
+      await setDoc(userRef, { progress: { [courseId]: payload } }, { merge: true });
+      setProgress(updated);
+      console.log("✅ Progreso guardado:", { lessonId, unitId, lessonIdToSave });
+    } catch (err) {
+      console.error("Error al guardar progreso:", err);
+    }
+  },
+  [firestore, user?.email, courseId, progress, unidad?.id, leccion?.id]
+);
+
+
 
 // 🔹 Restaurar la última lección vista (al cargar el progreso)
 useEffect(() => {
@@ -259,6 +289,54 @@ useEffect(() => {
   videoEl.addEventListener("ended", handleEnded);
   return () => videoEl.removeEventListener("ended", handleEnded);
 }, [resolvedVideo, leccion?.id, saveProgress]);
+
+// 🔹 Función para avanzar a la siguiente lección o finalizar el curso
+const goNextLesson = () => {
+  if (!curso || !unidad) {
+    toast.error("El curso aún no está cargado.");
+    return;
+  }
+
+  const totalUnits = curso.unidades?.length ?? 0;
+  const totalLessonsInUnit = unidad.lecciones?.length ?? 0;
+
+  // 🔹 Caso 1: Quedan lecciones en la unidad
+  if (leccionIndex < totalLessonsInUnit - 1) {
+    setLeccionIndex(leccionIndex + 1);
+    setExSubmitted(false);
+    setVideoEnded(false);
+    toast.info("➡️ Siguiente lección");
+    return;
+  }
+
+  // 🔹 Caso 2: Si la unidad tiene un cierre / examen
+  if (unidad.closing) {
+    toast.info("🎓 Pasando al examen final de la unidad...");
+    setLeccionIndex(-1);
+    return;
+  }
+
+  // 🔹 Caso 3: Hay otra unidad después
+  if (unidadIndex < totalUnits - 1) {
+    const nextUnit = curso.unidades[unidadIndex + 1];
+    const firstLesson = nextUnit?.lecciones?.[0];
+
+    if (nextUnit && firstLesson) {
+      toast.success(`✅ Unidad completada. Avanzando a: ${nextUnit.titulo}`);
+      setUnidadIndex(unidadIndex + 1);
+      setLeccionIndex(0);
+      setExSubmitted(false);
+      setVideoEnded(false);
+      return;
+    }
+  }
+
+  // 🔹 Caso 4: Ya no quedan unidades → curso completado
+  toast.success("🎉 ¡Curso completado por completo!");
+  setTimeout(() => {
+    router.push("/dashboard");
+  }, 1500);
+};
 
 
  // 🚫 Si no hay usuario o no tiene email, no seguimos
@@ -416,54 +494,49 @@ if (loading) {
       {/* BOTONES DE CONTROL */}
 <div className="flex gap-3 mt-4 flex-wrap">
   <button
-    onClick={() => {
-      if (!leccion?.id) return;
-      setExSubmitted(true);
+  onClick={() => {
+    // Guardamos localmente
+    setProgress((prev) => ({
+      ...prev,
+      [`closing-${unidad.id}`]: { exSubmitted: true, videoEnded: true },
+    }));
 
-      // 🔹 actualiza localmente para refrescar el progreso sin esperar a Firestore
-      setProgress((prev) => ({
-        ...prev,
-        [leccion.id]: {
-          ...(prev[leccion.id] || {}),
-          exSubmitted: true,
-          videoEnded,
-          updatedAt: Date.now(),
-        },
-      }));
+    const nextUnit = curso.unidades?.[unidadIndex + 1];
+    const nextLesson = nextUnit?.lecciones?.[0];
 
-      saveProgress(leccion.id, { exSubmitted: true, videoEnded });
-      toast.success("Progreso guardado correctamente");
-    }}
-    disabled={exSubmitted}
-    className="px-4 py-2 bg-yellow-400 text-black font-semibold rounded hover:bg-yellow-300 disabled:opacity-50"
-  >
-    {exSubmitted ? "Completada ✅" : "Marcar como completa"}
-  </button>
+    if (nextUnit && nextLesson) {
+      // 🔹 Hay otra unidad → guardamos progreso y pasamos a la siguiente
+      saveProgress(
+        `closing-${unidad.id}`,
+        { exSubmitted: true, videoEnded: true },
+        { nextUnitId: nextUnit.id, nextLessonId: nextLesson.id }
+      );
+      toast.success("Examen de la unidad completado 🎉");
+      setUnidadIndex(unidadIndex + 1);
+      setLeccionIndex(0);
+      setExSubmitted(false);
+      setVideoEnded(false);
+    } else {
+      // 🔹 No hay más unidades → marcamos curso completado y volvemos al dashboard
+      saveProgress(`closing-${unidad.id}`, { exSubmitted: true, videoEnded: true }, { omitLastActive: true });
+      toast.success("🎓 Curso completado por completo");
+      router.push("/dashboard");
+    }
+  }}
+  className="px-4 py-2 bg-yellow-400 text-black font-semibold rounded hover:bg-yellow-300"
+>
+  Marcar examen como completado
+</button>
+
 
   <button
-    onClick={() => {
-      if (leccionIndex < (unidad?.lecciones?.length ?? 0) - 1) {
-        setLeccionIndex(leccionIndex + 1);
-        setExSubmitted(false);
-        setVideoEnded(false);
-      } else if (unidad?.closing) {
-        // 🔹 Si la unidad tiene examen final, mostrarlo
-        toast.info("Pasando al examen final de la unidad 🎓");
-        setLeccionIndex(-1); // valor especial para mostrar closing
-      } else if (unidadIndex < (curso.unidades?.length ?? 0) - 1) {
-        setUnidadIndex(unidadIndex + 1);
-        setLeccionIndex(0);
-        setExSubmitted(false);
-        setVideoEnded(false);
-      } else {
-        toast.success("🎉 Curso completado");
-      }
-    }}
-    className="px-4 py-2 bg-slate-800 border border-slate-700 rounded hover:bg-slate-700 flex items-center gap-2"
-  >
-    <FiCheckCircle size={16} />
-    Siguiente
-  </button>
+  onClick={goNextLesson}
+  className="px-4 py-2 bg-slate-800 border border-slate-700 rounded hover:bg-slate-700 flex items-center gap-2"
+>
+  <FiCheckCircle size={16} />
+  Siguiente
+</button>
+
 </div>
 
 {/* 🔹 Renderiza examen de cierre si corresponde */}
