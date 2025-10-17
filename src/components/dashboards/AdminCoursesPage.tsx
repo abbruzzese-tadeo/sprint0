@@ -14,22 +14,41 @@ import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 import { toast } from 'sonner';
 
-import CourseCard from '../../../components/cursos/CourseCard';
-import CreateCourse from '../../../components/cursos/crear/CreateCourse';
-import EditCourseForm from '../../../components/cursos/edit/EditCourseForm'
-import { doc, deleteDoc } from "firebase/firestore";
+import CourseCard from '../../app/dashboard/cursos/CourseCard'
+import CreateCourse from '../../app/dashboard/cursos/crear/CreateCourse'
+import EditCourseForm from '../../app/dashboard/cursos/edit/EditCourseForm'
+import { doc, deleteDoc, getDocs } from "firebase/firestore";
 
 
 
 export default function AdminCoursesPage() {
-  console.log("AdminCoursesPage montado correctamente");
+  console.log("🎯 AdminCoursesPage montado");
+
+ 
 
   const [courses, setCourses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+
   useEffect(() => {
+  console.log("🚀 Probando conexión directa a Firestore...");
+  getDocs(collection(db, "cursos"))
+    .then((snapshot) => {
+      console.log("✅ Firestore respondió:", snapshot.size, "documentos");
+      snapshot.docs.forEach((doc) =>
+        console.log("📄 DOC DIRECTO:", doc.id, doc.data())
+      );
+    })
+    .catch((error) => {
+      console.error("❌ Error conectando a Firestore:", error);
+    });
+}, []);
+ useEffect(() => {
   const unsubscribe = onSnapshot(collection(db, "cursos"), (snapshot) => {
+    console.log("🔥 Snapshot recibido:", snapshot.size, "documentos");
+
     const data = snapshot.docs.map((doc) => {
       const c = doc.data();
+      console.log("📄 DOC DATA:", doc.id, c);
 
       return {
         id: doc.id,
@@ -72,6 +91,9 @@ export default function AdminCoursesPage() {
         image: c.urlImagen || "/images/default-course.jpg",
         featured: !!c.precio?.descuentoActivo,
         visible: c.publico ?? true,
+
+        // 👇 ESTA LÍNEA FINALMENTE AGREGA EL CAMPO
+        videoPresentacion: c.videoPresentacion || "",
       };
     });
 
@@ -81,6 +103,7 @@ export default function AdminCoursesPage() {
 
   return () => unsubscribe();
 }, []);
+
 
   const [selectedCourse, setSelectedCourse] = useState<any | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -103,7 +126,7 @@ export default function AdminCoursesPage() {
     creadoEn: course.created,
   };
 
-  console.log("🧩 Curso seleccionado para editar:", mappedCourse);
+
   setSelectedCourse(mappedCourse);
   setIsModalOpen(true);
 };
@@ -144,7 +167,7 @@ export default function AdminCoursesPage() {
         <h1 className="text-3xl font-bold text-gray-800">Cursos</h1>
           <Button
             onClick={() => {
-            console.log("CLICK en crear curso");
+           
             setIsCreateModalOpen(true);
           }}
         className="bg-blue-600 hover:bg-blue-700 text-white"

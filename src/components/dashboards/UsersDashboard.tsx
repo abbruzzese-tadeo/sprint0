@@ -19,7 +19,7 @@ interface StudentRow {
   schedule: string;
 }
 
-export default function AdminDashboard() {
+export default function UserDashboard() {
   const { users, loading: userLoading, error, fetchUsers, handleUpdateRole } = useUsers();
 
   // Estado del modal

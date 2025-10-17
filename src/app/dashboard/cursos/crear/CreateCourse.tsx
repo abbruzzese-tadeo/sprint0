@@ -350,28 +350,55 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
     );
   };
 
+
+  // === Subida a Imgur ===
+async function uploadToImgur(file: File): Promise<string | null> {
+  try {
+    const formData = new FormData();
+    formData.append("image", file);
+
+    const res = await fetch("https://api.imgur.com/3/image", {
+      method: "POST",
+      headers: {
+        Authorization: "Client-ID TU_CLIENT_ID_AQUI", // 👈 reemplazá por tu Client ID
+      },
+      body: formData,
+    });
+
+    const data = await res.json();
+    if (data.success) return data.data.link;
+    console.error("Imgur upload failed:", data);
+    toast.error("Upload failed");
+    return null;
+  } catch (err) {
+    console.error("Error uploading to Imgur:", err);
+    toast.error("Error uploading image");
+    return null;
+  }
+}
+
   /* =========================
      Uploads
      ========================= */
   const onUploadMiniaturaCurso = async (file: File | undefined) => {
-    if (!file) return;
-    if (!file.type.startsWith("image/"))
-      return toast.error("Upload a valid image");
-    try {
-      setUploading(true);
-      const url = await uploadFile(
-  `cursos/lecciones/pdf/${Date.now()}_${file.name}`,
-  file
-);
-      setCurso((p) => ({ ...p, urlImagen: url }));
-      toast.success("Thumbnail uploaded");
-    } catch (e: any) {
-      console.error(e);
-      toast.error("Couldn't upload thumbnail");
-    } finally {
-      setUploading(false);
-    }
-  };
+  if (!file) return;
+  if (!file.type.startsWith("image/"))
+    return toast.error("Upload a valid image");
+  try {
+    setUploading(true);
+    // 🔹 Subir a Imgur en lugar de Firebase Storage
+    const url = await uploadToImgur(file);
+    if (!url) return toast.error("Could not upload image");
+    setCurso((p) => ({ ...p, urlImagen: url }));
+    toast.success("Thumbnail uploaded successfully");
+  } catch (e: any) {
+    console.error(e);
+    toast.error("Couldn't upload thumbnail");
+  } finally {
+    setUploading(false);
+  }
+};
+
 
   const onUploadPdfLeccion = async (unidadIdx: number, leccionIdx: number, file: File | undefined) => {
     if (!file) return;
@@ -771,21 +798,19 @@ const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
                           <FiImage className="w-4 h-4" /> Course thumbnail
                         </label>
 
-                        {/* <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:border-slate-400 hover:bg-slate-50 transition-all">
-                          <FiUpload className="w-4 h-4 text-slate-500" />
-                          <span className="text-sm text-slate-600">
-                            {uploading ? "Uploading..." : "Upload image"}
-                          </span>
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            onChange={(e) =>
-                              onUploadMiniaturaCurso(e.target.files?.[0])
-                            }
-                            disabled={uploading}
-                          />
-                        </label> */}
+                        <label className="flex items-center justify-center gap-2 p-3 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:border-slate-400 hover:bg-slate-50 transition-all">
+  <FiUpload className="w-4 h-4 text-slate-500" />
+  <span className="text-sm text-slate-600">
+    {uploading ? "Uploading..." : "Upload image"}
+  </span>
+  <input
+    type="file"
+    accept="image/*"
+    className="hidden"
+    onChange={(e) => onUploadMiniaturaCurso(e.target.files?.[0])}
+    disabled={uploading}
+  />
+</label>
 
                         <div className="relative">
                           <FiLink2 className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />

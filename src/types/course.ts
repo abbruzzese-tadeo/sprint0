@@ -18,5 +18,6 @@ export interface Course {
   image: string;
   visible: boolean;
   featured: boolean;
+  videoPresentacion?: string;
 }
 

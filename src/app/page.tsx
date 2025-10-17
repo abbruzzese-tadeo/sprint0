@@ -11,9 +11,9 @@ export default function HomePage() {
   useEffect(() => {
     if (authReady && user && role) {
       switch (role) {
-        case 'alumno': router.push('/dashboard/alumno'); break;
-        case 'profesor': router.push('/dashboard/profesor'); break;
-        case 'admin': router.push('/dashboard/admin'); break;
+        case 'alumno': router.push('/dashboard/'); break;
+        case 'profesor': router.push('/dashboard/'); break;
+        case 'admin': router.push('/dashboard/'); break;
       }
     }
   }, [user, role, authReady, router]);

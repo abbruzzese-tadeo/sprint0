@@ -18,10 +18,32 @@ interface Props {
   onEdit: (course: Course) => void;
 }
 
+function getSafeImageUrl(url: string | undefined): string {
+  if (!url) return "/images/default-course.jpg"; // 👈 tu imagen local por defecto
+  try {
+    const u = new URL(url);
+    const allowedHosts = [
+      "firebasestorage.googleapis.com",
+      "images.unsplash.com",
+      "www.pexels.com",
+      "cdn.pixabay.com",
+      "lh3.googleusercontent.com",
+      "i.imgur.com",
+    ];
+    const isAllowed = allowedHosts.includes(u.hostname);
+    const looksLikeImage = /\.(jpg|jpeg|png|webp|gif)$/i.test(u.pathname);
+    if (isAllowed && looksLikeImage) return url;
+    return "/images/default-course.jpg"; // fallback si no es válida
+  } catch {
+    return "/images/default-course.jpg";
+  }
+}
 
 
 export default function CourseCard({ course, onDelete, onToggleVisibility, onEdit }: Props) {
   const router = useRouter();
+    console.log("🎬 VIDEO:", course.videoPresentacion || (course as any).videoPresentacion);
+
   return (
     
     <motion.div
@@ -31,21 +53,58 @@ export default function CourseCard({ course, onDelete, onToggleVisibility, onEdi
       className="bg-white rounded-xl shadow-md hover:shadow-lg transition overflow-hidden border"
     >
       <div className="flex flex-col lg:flex-row">
-        {/* Imagen */}
-        <div className="relative w-full lg:w-1/3 h-60 lg:h-auto">
-          <Image
-            src={course.image.startsWith('http') ? course.image : `/images/${course.image}`}
-            alt={course.title}
-            fill
-            className="object-cover"
-          />
-          <div className="absolute top-3 left-3">
-            <Badge className="bg-emerald-100 text-emerald-800">Público</Badge>
-          </div>
-          <div className="absolute bottom-3 left-3 bg-black/60 text-white text-sm px-3 py-1 rounded-full">
-            🎥 Video presentación
-          </div>
-        </div>
+        {/* Imagen o Video (funcional con embed directo y animado) */}
+{/* Imagen o Video (funcional y visible siempre) */}
+<div className="relative w-full lg:w-1/3 bg-gray-100 overflow-hidden rounded-l-xl">
+
+  {course.videoPresentacion || (course as any).videoPresentacion ? (
+    
+    <motion.div
+      key="video"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.5, ease: "easeOut" }}
+      className="relative w-full h-60 lg:h-full bg-black"
+    >
+      <iframe
+        src={course.videoPresentacion || (course as any).videoPresentacion}
+        title="Video de presentación"
+        className="w-full h-full border-0"
+        style={{ aspectRatio: "16/9" }}
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        allowFullScreen
+      />
+      <div className="absolute bottom-3 left-3 bg-black/60 text-white text-sm px-3 py-1 rounded-full flex items-center gap-2 backdrop-blur-sm">
+        🎥 Video presentación
+      </div>
+    </motion.div>
+  ) : (
+    <motion.div
+      key="image"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.5, ease: "easeOut" }}
+      className="relative w-full h-60 lg:h-full"
+    >
+      <Image
+        src={getSafeImageUrl(course.image || (course as any).urlImagen)}
+        alt={course.title || (course as any).titulo || "Course thumbnail"}
+        fill
+        className="object-cover"
+        sizes="(max-width: 1024px) 100vw, 33vw"
+      />
+    </motion.div>
+  )}
+
+  {/* Badge “Público” */}
+  <div className="absolute top-3 left-3">
+    <Badge className="bg-emerald-100 text-emerald-800">Público</Badge>
+  </div>
+</div>
+
+
+
+
 
         {/* Contenido */}
         <div className="flex-1 p-6 flex flex-col justify-between">
@@ -94,7 +153,7 @@ export default function CourseCard({ course, onDelete, onToggleVisibility, onEdi
               <Button
                 variant="outline"
                 className="flex items-center gap-1"
-                onClick={() => router.push(`/dashboard/curso/${course.id}`)}
+                onClick={() => router.push(`/dashboard/${course.id}`)}
               >
                 <Eye size={16} /> Ver detalles
               </Button>

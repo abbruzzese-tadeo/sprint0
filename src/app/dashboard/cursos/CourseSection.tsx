@@ -10,58 +10,68 @@ import { Button } from "@/components/ui/button";
 import { Plus } from "lucide-react";
 
 export default function CourseSection() {
+  console.log("🎯 CourseSection montado");
   const [courses, setCourses] = useState<Course[]>([]);
   const [loading, setLoading] = useState(true);
 
   // 🔥 Cargar cursos en tiempo real desde Firestore
   useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, "cursos"), (snapshot) => {
-      const data = snapshot.docs.map((doc) => {
-        const c = doc.data();
+    
+  const unsubscribe = onSnapshot(collection(db, "cursos"), (snapshot) => {
+     console.log("🔥 onSnapshot triggered, docs:", snapshot.docs.length);
+    const data = snapshot.docs.map((doc) => {
+      const c = doc.data();
+      console.log("📦 DOC DATA:", doc.id, c); // 👈 AQUI el log
 
-        // Adaptar datos de Firestore al modelo de CourseCard
-        return {
-          id: doc.id,
-          title: c.titulo || "Sin título",
-          description: c.descripcion || "",
-          category: c.categoria || "Sin categoría",
-          level: c.nivel || "N/A",
-          image: c.urlImagen || "/images/default-course.jpg",
-          type: c.capstone ? "Project" : "Course",
-          students: Array.isArray(c.cursantes) ? c.cursantes.length : 0,
-          units: Array.isArray(c.unidades) ? c.unidades.length : 0,
-          lessons: Array.isArray(c.unidades)
-            ? c.unidades.reduce(
-                (acc: number, u: any) => acc + (u.lecciones?.length || 0),
-                0
-              )
-            : 0,
-          pdfs: Array.isArray(c.unidades)
-            ? c.unidades.reduce(
-                (acc: number, u: any) =>
-                  acc +
-                  (u.lecciones?.filter((l: any) => l.pdfUrl)?.length || 0),
-                0
-              )
-            : 0,
-          duration: Array.isArray(c.unidades)
-            ? `${c.unidades.reduce(
-                (acc: number, u: any) => acc + (u.duracion || 0),
-                0
-              )} min`
-            : "—",
-          created: c.creadoEn
-            ? new Date(c.creadoEn.seconds * 1000).toLocaleDateString()
-            : "N/A",
-          price: Number(c.precio?.monto || 0),
-          oldPrice: Number(
-            c.precio?.descuentoActivo && c.precio?.montoDescuento
-              ? c.precio.monto
-              : c.precio?.monto || 0
-          ),
-          featured: !!c.precio?.descuentoActivo,
-          visible: c.publico ?? true,
-        };
+  
+  // Adaptar datos de Firestore al modelo de CourseCard
+  return {
+    id: doc.id,
+    title: c.titulo || "Sin título",
+    description: c.descripcion || "",
+    category: c.categoria || "Sin categoría",
+    level: c.nivel || "N/A",
+    image: c.urlImagen || "/images/default-course.jpg",
+    type: c.capstone ? "Project" : "Course",
+    students: Array.isArray(c.cursantes) ? c.cursantes.length : 0,
+    units: Array.isArray(c.unidades) ? c.unidades.length : 0,
+    lessons: Array.isArray(c.unidades)
+      ? c.unidades.reduce(
+          (acc: number, u: any) => acc + (u.lecciones?.length || 0),
+          0
+        )
+      : 0,
+    pdfs: Array.isArray(c.unidades)
+      ? c.unidades.reduce(
+          (acc: number, u: any) =>
+            acc +
+            (u.lecciones?.filter((l: any) => l.pdfUrl)?.length || 0),
+          0
+        )
+      : 0,
+    duration: Array.isArray(c.unidades)
+      ? `${c.unidades.reduce(
+          (acc: number, u: any) => acc + (u.duracion || 0),
+          0
+        )} min`
+      : "—",
+    created: c.creadoEn
+      ? new Date(c.creadoEn.seconds * 1000).toLocaleDateString()
+      : "N/A",
+    price: Number(c.precio?.monto || 0),
+    oldPrice: Number(
+      c.precio?.descuentoActivo && c.precio?.montoDescuento
+        ? c.precio.monto
+        : c.precio?.monto || 0
+    ),
+    featured: !!c.precio?.descuentoActivo,
+    visible: c.publico ?? true,
+
+    // 👇 ESTE ERA EL CAMPO FALTANTE
+    videoPresentacion: c.videoPresentacion || "",
+  };
+});
+
       });
 
       setCourses(data);

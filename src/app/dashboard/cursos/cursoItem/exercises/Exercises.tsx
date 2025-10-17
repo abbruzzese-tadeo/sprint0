@@ -1022,6 +1022,18 @@ export default function Exercises({ initial = [], onChange }: ExercisesProps) {
       if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
     };
   }, []);
+useEffect(() => {
+  if (!mountedRef.current) return; // evitar que se dispare en el montaje
+  if (typeof onChange === "function") {
+    const jsonCurrent = JSON.stringify(exercisesRef.current);
+    const jsonSnapshot = JSON.stringify(snapshot);
+    // solo si el contenido cambió realmente
+    if (jsonCurrent !== jsonSnapshot) {
+      onChange(structuredClone(exercisesRef.current));
+    }
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [snapshot]);
 
   // ===== UI =====
   return (

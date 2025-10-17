@@ -27,6 +27,7 @@ import {
   arrayRemove,
   Firestore,
   Timestamp,
+  setDoc,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, FirebaseStorage } from "firebase/storage";
 import { toast } from "sonner";
@@ -332,7 +333,12 @@ function EditarCurso({ courseId, onClose }: EditarCursoProps) {
         });
 
         setUnidades(cursoNormalized.unidades || []);
-        setExamenFinal(cursoNormalized.examenFinal || { introTexto: "", ejercicios: [] });
+        setExamenFinal({
+  introTexto: data.examenFinal?.introTexto || "",
+  ejercicios: Array.isArray(data.examenFinal?.ejercicios)
+    ? data.examenFinal.ejercicios
+    : [], // 👈 siempre un array válido
+});;
         setCapstone(cursoNormalized.capstone || { videoUrl: "", instrucciones: "", checklist: [] });
         setOriginalCursantes(cursoNormalized.cursantes || []);
       } catch (e) {
@@ -517,121 +523,156 @@ function EditarCurso({ courseId, onClose }: EditarCursoProps) {
     /* =========================
      Guardar cambios
      ========================= */
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
 
-    if (!firestore) {
-      toast.error("Firestore no inicializado");
-      return;
+     /** 🔹 Elimina cualquier undefined recursivamente (Firestore-safe) */
+function removeUndefined(obj: any): any {
+  if (Array.isArray(obj)) {
+    return obj.map(removeUndefined);
+  } else if (obj && typeof obj === "object") {
+    const cleaned: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      if (value !== undefined) {
+        cleaned[key] = removeUndefined(value);
+      }
     }
+    return cleaned;
+  }
+  return obj;
+}
+  const handleSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
 
-    if (!curso.titulo?.trim()) return toast.error("The course needs a title");
-    if (!Array.isArray(unidades) || unidades.length === 0) return toast.error("Add at least one unit");
+  if (!firestore) {
+    toast.error("Firestore no inicializado");
+    return;
+  }
 
-    // Normalizar unidades/lecciones
-    const unidadesToSave: Unidad[] = unidades.map((u) => ({
+  if (!curso.titulo?.trim()) return toast.error("The course needs a title");
+  if (!Array.isArray(unidades) || unidades.length === 0)
+    return toast.error("Add at least one unit");
+
+  const cleanObject = (obj: any): any => {
+  if (Array.isArray(obj)) {
+    return obj.map(cleanObject); // 👈 no filtramos arrays vacíos
+  } else if (obj && typeof obj === "object") {
+    const result: any = {};
+    Object.entries(obj).forEach(([k, v]) => {
+      if (v === undefined) return;
+      if (v === "") result[k] = null;
+      else result[k] = cleanObject(v);
+    });
+    return result;
+  }
+  return obj;
+};
+
+
+  // Normalizar unidades y eliminar campos vacíos
+  const unidadesToSave: Unidad[] = unidades.map((u) =>
+    cleanObject({
       id: u.id || makeId(),
       titulo: u.titulo || "",
       descripcion: u.descripcion || "",
       urlVideo: "",
       urlImagen: u.urlImagen || "",
-      duracion: u.duracion ? Number(u.duracion) : undefined,
+      duracion: u.duracion ? Number(u.duracion) : null,
       ejercicios: Array.isArray(u.ejercicios) ? u.ejercicios : [],
       textoCierre: u.textoCierre || "",
-      lecciones: (u.lecciones || []).map((l) => ({
-        id: l.id || makeId(),
-        titulo: l.titulo || "",
-        texto: l.texto || "",
-        urlVideo: l.urlVideo || "",
-        urlImagen: l.urlImagen || "",
-        pdfUrl: l.pdfUrl || "",
-        ejercicios: Array.isArray(l.ejercicios) ? l.ejercicios : [],
-        finalMessage: l.finalMessage || "",
-      })),
+      lecciones: (u.lecciones || []).map((l) =>
+        cleanObject({
+          id: l.id || makeId(),
+          titulo: l.titulo || "",
+          texto: l.texto || "",
+          urlVideo: l.urlVideo || "",
+          urlImagen: l.urlImagen || "",
+          pdfUrl: l.pdfUrl || "",
+          ejercicios: Array.isArray(l.ejercicios) ? l.ejercicios : [],
+          finalMessage: l.finalMessage || "",
+        })
+      ),
       closing: u.closing
         ? {
             examIntro: u.closing.examIntro || "",
-            examExercises: Array.isArray(u.closing.examExercises) ? u.closing.examExercises : [],
+            examExercises: Array.isArray(u.closing.examExercises)
+              ? u.closing.examExercises
+              : [],
             closingText: u.closing.closingText || "",
           }
-        : undefined,
-    }));
+        : null,
+    })
+  );
 
-    // Payload a guardar (sin creadoEn: se conserva)
-    const payloadToUpdate = {
-      ...curso,
-      precio: {
-        monto: curso.precio?.monto === "" ? "" : Number(curso.precio?.monto),
-        montoDescuento: curso.precio?.montoDescuento === "" ? "" : Number(curso.precio?.montoDescuento),
-        descuentoActivo: !!curso.precio?.descuentoActivo,
-      },
-      unidades: unidadesToSave,
-      examenFinal,
-      capstone,
-    };
+  const payloadToUpdate = cleanObject({
+  ...curso,
+  precio: {
+    monto: curso.precio?.monto === "" ? 0 : Number(curso.precio?.monto ?? 0),
+    montoDescuento:
+      curso.precio?.montoDescuento === "" ? 0 : Number(curso.precio?.montoDescuento ?? 0),
+    descuentoActivo: !!curso.precio?.descuentoActivo,
+  },
+  unidades: unidadesToSave,
+  examenFinal: {
+    introTexto: examenFinal.introTexto || "",
+    ejercicios: Array.isArray(examenFinal.ejercicios)
+      ? examenFinal.ejercicios
+      : [], // 👈 siempre un array
+  },
+  capstone: cleanObject(capstone),
+});
 
-    safeSetLoader(true);
-    try {
-      // 1) updateDoc del curso
-      const cursoRef = doc(firestore, "cursos", courseId);
-      await updateDoc(cursoRef, payloadToUpdate as any);
+  console.log("📦 Payload enviado a Firestore:", payloadToUpdate);
 
-      // 2) sincronizar alumnos (delta: nuevos => arrayUnion; removidos => arrayRemove)
-      const before = new Set(originalCursantes.map((e) => (e || "").toLowerCase().trim()).filter(Boolean));
-      const after = new Set((curso.cursantes || []).map((e) => (e || "").toLowerCase().trim()).filter(Boolean));
+  safeSetLoader(true);
+  try {
+    const cursoRef = doc(firestore, "cursos", courseId);
+    console.log("🔥 examenFinal enviado:", examenFinal);
+console.log("🔥 payload final:", JSON.stringify(payloadToUpdate, null, 2));
 
-      const added: string[] = [];
-      const removed: string[] = [];
+const sanitizeNulls = (obj: any): any => {
+  if (Array.isArray(obj)) return obj.map(sanitizeNulls);
+  if (obj && typeof obj === "object") {
+    const clean: any = {};
+    Object.entries(obj).forEach(([k, v]) => {
+      if (v !== null && v !== undefined) clean[k] = sanitizeNulls(v);
+    });
+    return clean;
+  }
+  return obj;
+};
 
-      after.forEach((e) => {
-        if (!before.has(e)) added.push(e);
-      });
-      before.forEach((e) => {
-        if (!after.has(e)) removed.push(e);
-      });
+const sanitizedPayload = sanitizeNulls(payloadToUpdate);
+await setDoc(cursoRef, sanitizedPayload, { merge: true });
+try {
+  const cursoRef = doc(firestore, "cursos", courseId);
+  await setDoc(cursoRef, sanitizedPayload, { merge: true });
 
-      if (added.length > 0 || removed.length > 0) {
-        const batch = writeBatch(firestore);
-        const cursosCollection = collection(firestore, "alumnos");
+  // ✅ Traer curso actualizado
+  const snap = await getDoc(cursoRef);
+  const updatedCurso = { id: courseId, ...snap.data() };
 
-        // Altas
-        added.forEach((email) => {
-          const alumnoRef = doc(cursosCollection, email);
-          batch.set(alumnoRef, { cursosAdquiridos: arrayUnion(courseId) }, { merge: true });
-        });
+  // ✅ Actualizar estado global/local
+  safeSetCursos((prev: any) => {
+    if (!Array.isArray(prev)) return [updatedCurso];
+    return prev.map((c: any) => (c.id === courseId ? updatedCurso : c));
+  });
 
-        // Bajas
-        removed.forEach((email) => {
-          const alumnoRef = doc(cursosCollection, email);
-          batch.set(alumnoRef, { cursosAdquiridos: arrayRemove(courseId) }, { merge: true });
-        });
+  console.log("✅ Firestore actualizado y refrescado:", updatedCurso);
+  toast.success("✅ Changes saved");
+  onClose?.();
+} catch (err) {
+  console.error("❌ Firestore error:", err);
+  toast.error("Error saving changes");
+} finally {
+  safeSetLoader(false);
+}
+  } catch (err) {
+    console.error("❌ Firestore error:", err);
+    toast.error("Error saving changes");
+  } finally {
+    safeSetLoader(false);
+  }
+};
 
-        await batch.commit();
-      }
-
-      // 3) Actualizar estado local setCursos (reemplazar)
-      safeSetCursos((prev) => {
-        if (!Array.isArray(prev)) return prev;
-        return prev.map((c) =>
-          (c as any).id === courseId
-            ? ({
-                ...(c as any),
-                ...payloadToUpdate,
-              } as any)
-            : c
-        );
-      });
-
-      setOriginalCursantes(curso.cursantes || []);
-      toast.success("✅ Changes saved");
-      onClose?.();
-    } catch (err) {
-      console.error(err);
-      toast.error("Error saving changes");
-    } finally {
-      safeSetLoader(false);
-    }
-  };
 
   /* =========================
      UX: ESC para cerrar + bloquear scroll
@@ -1374,9 +1415,12 @@ function EditarCurso({ courseId, onClose }: EditarCursoProps) {
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-slate-700">Exam Exercises</label>
                     <Exercises
-                      exercises={examenFinal.ejercicios}
-                      setExercises={(newExercises: Ejercicio[]) => setExamenFinal((p) => ({ ...p, ejercicios: newExercises }))}
-                    />
+  initial={examenFinal.ejercicios}
+  onChange={(newExercises) =>
+    setExamenFinal((prev) => ({ ...prev, ejercicios: newExercises }))
+  }
+/>
+
                   </div>
                 </div>
               </section>

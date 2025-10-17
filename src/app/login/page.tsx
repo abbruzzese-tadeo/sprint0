@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react'; // Agrega useEffect
+import { useState, useEffect } from 'react';
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
@@ -11,55 +11,53 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [isRegister, setIsRegister] = useState(false);
   const [error, setError] = useState('');
-  const { user, role, authReady } = useAuth(); // Usa user y role del context
+  const [loading, setLoading] = useState(false);
+  const { user, authReady } = useAuth();
   const router = useRouter();
 
-  // Nuevo: useEffect para redirigir automáticamente si ya está logueado
+  // ✅ Redirigir solo cuando el AuthContext confirma usuario activo
   useEffect(() => {
-    if (authReady && user && role) {
-      // Redirige basado en rol
-      switch (role) {
-        case 'alumno': router.push('/dashboard/alumno'); break;
-        case 'profesor': router.push('/dashboard/profesor'); break;
-        case 'admin': router.push('/dashboard/admin'); break;
-        default: router.push('/dashboard/alumno'); // Fallback
-      }
+    if (authReady && user) {
+      router.replace('/dashboard'); // replace evita volver atrás
     }
-  }, [user, role, authReady, router]);
+  }, [authReady, user, router]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setLoading(true);
+
     try {
       if (isRegister) {
-        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        // El context maneja el rol y redirección via useEffect arriba
+        await createUserWithEmailAndPassword(auth, email, password);
+        alert('Cuenta creada exitosamente. Ahora iniciá sesión.');
+        setIsRegister(false);
       } else {
         await signInWithEmailAndPassword(auth, email, password);
-        // Fallback: Pequeño delay para que el context actualice, luego redirige
-        setTimeout(() => {
-          if (user && role) {
-            switch (role) {
-              case 'alumno': router.push('/dashboard/alumno'); break;
-              case 'profesor': router.push('/dashboard/profesor'); break;
-              case 'admin': router.push('/dashboard/admin'); break;
-              default: router.push('/dashboard/alumno');
-            }
-          }
-        }, 500); // 500ms para que onAuthStateChanged termine
+        // 👇 ya NO hacemos router.push() acá
       }
     } catch (err: any) {
-      setError(err.message);
+      console.error('Error en autenticación:', err);
+      setError('Credenciales incorrectas o error al iniciar sesión.');
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Si está cargando o ya logueado, muestra loading o redirige (maneja en useEffect)
-  if (!authReady) return <div className="min-h-screen flex items-center justify-center">Cargando...</div>;
+  if (!authReady)
+    return (
+      <div className="min-h-screen flex items-center justify-center text-gray-600">
+        Cargando autenticación...
+      </div>
+    );
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <form onSubmit={handleAuth} className="p-8 bg-white rounded-lg shadow-lg w-96"> {/* Mejora shadow */}
-        <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">{isRegister ? 'Registro' : 'Login'}</h2>
+      <form onSubmit={handleAuth} className="p-8 bg-white rounded-lg shadow-lg w-96">
+        <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">
+          {isRegister ? 'Registro' : 'Login'}
+        </h2>
+
         <input
           type="email"
           placeholder="Email"
@@ -76,19 +74,33 @@ export default function LoginPage() {
           className="w-full p-3 border border-gray-300 rounded-lg mb-6 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
           required
         />
-        <button 
-          type="submit" 
-          className="w-full bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white p-3 rounded-lg font-medium transition duration-200 transform hover:scale-105 shadow-md" // Mejora hover aquí
+
+        <button
+          type="submit"
+          disabled={loading}
+          className={`w-full bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white p-3 rounded-lg font-medium transition duration-200 transform hover:scale-105 shadow-md ${
+            loading ? 'opacity-70 cursor-not-allowed' : ''
+          }`}
         >
-          {isRegister ? 'Registrarse' : 'Iniciar Sesión'}
+          {loading
+            ? 'Procesando...'
+            : isRegister
+            ? 'Registrarse'
+            : 'Iniciar Sesión'}
         </button>
-        {error && <p className="text-red-500 mt-3 text-sm text-center bg-red-50 p-2 rounded">{error}</p>}
+
+        {error && (
+          <p className="text-red-500 mt-3 text-sm text-center bg-red-50 p-2 rounded">
+            {error}
+          </p>
+        )}
+
         <button
           type="button"
           onClick={() => setIsRegister(!isRegister)}
-          className="w-full text-blue-500 hover:text-blue-700 active:text-blue-800 mt-4 text-sm font-medium transition duration-200" // Mejora hover
+          className="w-full text-blue-500 hover:text-blue-700 mt-4 text-sm font-medium transition duration-200"
         >
-          {isRegister ? 'Ya tengo cuenta' : 'Crear cuenta'}
+          {isRegister ? 'Ya tengo cuenta' : 'Crear cuenta nueva'}
         </button>
       </form>
     </div>
