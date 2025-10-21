@@ -3,6 +3,7 @@ import { useDashboardUI } from "@/stores/useDashboardUI";
 import { useAuth } from "@/contexts/AuthContext";
 import { LogOut } from "lucide-react";
 import { useRouter } from "next/navigation";
+import LogoutConfirm from "@/components/ui/LogoutConfirm";
 
 
 export default function SidebarAdmin() {
@@ -20,10 +21,13 @@ export default function SidebarAdmin() {
   ];
 
   const handleLogout = async () => {
+  try {
     await logout();
-    router.push("/login");
-  };
-
+    router.replace("/login"); // 👈 replace evita volver con "atrás"
+  } catch (error) {
+    console.error("Error en logout:", error);
+  }
+};
   return (
     <aside className="w-64 bg-slate-900 text-white flex flex-col">
       <div className="p-4 font-bold text-lg border-b border-slate-700">
@@ -58,13 +62,14 @@ export default function SidebarAdmin() {
             </span>
           </div>
         </div>
-        <button
+        {/* <button
           onClick={handleLogout}
           className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-200 hover:text-white transition"
         >
           <LogOut size={18} />
           <span className="text-sm font-medium">Cerrar sesión</span>
-        </button>
+        </button> */}
+        <LogoutConfirm />
       </div>
     </aside>
   );

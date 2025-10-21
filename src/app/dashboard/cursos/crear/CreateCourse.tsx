@@ -20,12 +20,14 @@ import {
   serverTimestamp,
   writeBatch,
   doc,
+  getDoc,
+  updateDoc,
   arrayUnion,
   Firestore,
   Timestamp,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, FirebaseStorage } from "firebase/storage";
-import ContextGeneral from "@/contexts/contextGeneral"; // Assuming this path is correct
+import { useAuth } from "@/contexts/AuthContext"; // ✅ correcto
 import { toast } from "sonner";
 import Exercises from "../cursoItem/exercises/Exercises";
 // import Exercises from "../cursoItem/exercises/Exercises"; // Assuming this path is correct
@@ -53,6 +55,8 @@ import {
   FiGlobe,
 } from "react-icons/fi";
 import { storage, db } from "@/lib/firebase";
+import { enrollAlumnoToCourse } from "@/lib/enrollment";
+import { fetchUserFromBatches } from "@/lib/userBatches";
 
 /* ----------------- Interfaces for Data Structures ----------------- */
 
@@ -130,16 +134,6 @@ interface Alumno {
   // Add other student-related fields if available in your context
 }
 
-// Assuming ContextGeneral provides these types
-interface ContextGeneralType {
-  firestore: Firestore | null;
-  storage: FirebaseStorage | null;
-  setLoader: React.Dispatch<React.SetStateAction<boolean>> | null;
-  setCursos: React.Dispatch<React.SetStateAction<Curso[] | null>> | null;
-  alumnos?: Alumno[];
-  usuarios?: Alumno[];
-  users?: Alumno[];
-}
 
 /* ----------------- small helpers ----------------- */
 // Unique ID for units/lessons
@@ -170,23 +164,10 @@ interface CrearCursoProps {
 
 function CrearCurso({ onClose }: CrearCursoProps) {
   // Context: Firestore/Storage, loaders, global courses state
-  const firestore = db;
 
   // Full context (to read students list)
-  const ctx = useContext(ContextGeneral) as ContextGeneralType;
-  const { firestore: firestoreCtx, storage: storageCtx, setLoader, setCursos } = ctx || {};
-  const safeSetLoader = typeof setLoader === "function" ? setLoader : () => {};
-const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
+ const { firestore, storage, alumnos, reloadData } = useAuth();;
 
-
-
-  /* =========================
-     Students from Context
-     ========================= */
-  const alumnos: Alumno[] = useMemo(
-    () => (ctx?.alumnos || ctx?.usuarios || ctx?.users || []).filter(Boolean),
-    [ctx]
-  );
 
   /* =========================
      Main Tabs (parity)
@@ -459,7 +440,7 @@ async function uploadToImgur(file: File): Promise<string | null> {
      Save
      ========================= */
     //  const safeSetLoader = setLoader || (() => {});
-    console.log("🧩 ContextGeneral desde CrearCurso:", { firestore, storage, setLoader, setCursos });
+ 
 
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -522,36 +503,59 @@ async function uploadToImgur(file: File): Promise<string | null> {
 
   console.log("📦 [DEBUG] Payload final a guardar:", payload);
 
- safeSetLoader(true);
+if (!firestore) return toast.error("Firestore no inicializado");
   try {
     // 🔥 Paso 1: Guardar curso
     console.log("🚀 [DEBUG] Intentando guardar curso...");
-    const refCurso = await addDoc(collection(dbToUse, "cursos"), payload);
+    const refCurso = await addDoc(collection(firestore, "cursos"), payload);
     console.log("✅ [DEBUG] Curso creado con ID:", refCurso.id);
 
-    // 🔥 Paso 2: Enrolar estudiantes
-    const emailsSel = Array.isArray(payload.cursantes)
-      ? payload.cursantes
-      : [];
 
-    console.log("📧 [DEBUG] Estudiantes a enrolar:", emailsSel);
+   if (curso.cursantes.length > 0) {
+  console.log("🚀 Iniciando enrolamiento directo...");
 
-    if (emailsSel.length > 0) {
-      const batch = writeBatch(dbToUse);
-      emailsSel
-        .map((e) => String(e || "").trim().toLowerCase())
-        .filter((e) => e && e.includes("@"))
-        .forEach((emailLc) => {
-          const alumnoRef = doc(dbToUse, "alumnos", emailLc);
-          batch.set(
-            alumnoRef,
-            { cursosAdquiridos: arrayUnion(refCurso.id) },
-            { merge: true }
-          );
-        });
-      await batch.commit();
-      console.log("✅ [DEBUG] Batch de alumnos actualizado");
+  for (const email of curso.cursantes.map(e => e.toLowerCase().trim())) {
+    try {
+      // Buscar en batches del 1 al 10
+      let userFound = false;
+      for (let i = 1; i <= 10; i++) {
+        const batchRef = doc(firestore, "alumnos", `batch_${i}`);
+        const snap = await getDoc(batchRef);
+        if (!snap.exists()) continue;
+
+        const data = snap.data();
+        const userKey = Object.keys(data).find(
+          (k) => k.startsWith("user_") && data[k]?.email === email
+        );
+
+        if (userKey) {
+          const path = `${userKey}.cursosAdquiridos`;
+          await updateDoc(batchRef, { [path]: arrayUnion(refCurso.id) });
+          console.log(`✅ ${email} actualizado en ${batchRef.id}/${userKey}`);
+          userFound = true;
+          break;
+        }
+      }
+
+      if (!userFound) {
+        console.warn(`⚠️ Usuario ${email} no encontrado en ningún batch`);
+      }
+    } catch (err) {
+      console.error(`❌ Error enrolando ${email}:`, err);
     }
+  }
+
+  // Relación inversa: emails en el curso
+  const cursoRef = doc(firestore, "cursos", refCurso.id);
+  await updateDoc(cursoRef, {
+    cursantes: arrayUnion(...curso.cursantes.map(e => e.toLowerCase())),
+  });
+
+  console.log("✅ Enrolamiento completado correctamente.");
+}
+
+
+
 
     // 🔥 Paso 3: Actualizar estado local
     const newCursoForState: Curso & { id: string } = {
@@ -559,13 +563,7 @@ async function uploadToImgur(file: File): Promise<string | null> {
       ...payload,
       creadoEn: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 } as Timestamp,
     };
-    console.log("🔹 [DEBUG] Actualizando estado local...", newCursoForState);
-   safeSetCursos((prev) => {
-
-      if (!Array.isArray(prev)) return [newCursoForState];
-      if (prev.some((c) => (c as any).id === newCursoForState.id)) return prev;
-      return [newCursoForState, ...prev];
-    });
+    await reloadData?.();
 
     toast.success("✅ Course created successfully");
     onClose?.();
@@ -574,7 +572,7 @@ async function uploadToImgur(file: File): Promise<string | null> {
     toast.error("Error creating the course");
   } finally {
     console.log("🔹 [DEBUG] handleSubmit finalizado");
-    safeSetLoader(false);
+    
   }
 };
 

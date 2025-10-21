@@ -145,15 +145,15 @@ export default function CourseCard({ course, onDelete, onToggleVisibility, onEdi
           {/* Precios y acciones */}
           <div className="mt-6 flex flex-col sm:flex-row justify-between items-center border-t pt-4">
             <div className="flex items-baseline gap-2">
-              <span className="text-gray-400 line-through text-sm">${course.oldPrice.toLocaleString()}</span>
-              <span className="text-green-600 font-bold text-xl">${course.price.toLocaleString()}</span>
+              {/* <span className="text-gray-400 line-through text-sm">${course.oldPrice.toLocaleString()}</span> */}
+              {/* <span className="text-green-600 font-bold text-xl">${course.price.toLocaleString()}</span> */}
             </div>
 
             <div className="flex flex-wrap gap-2 mt-4 sm:mt-0">
               <Button
                 variant="outline"
                 className="flex items-center gap-1"
-                onClick={() => router.push(`/dashboard/${course.id}`)}
+                onClick={() => router.push(`/material-academico/${course.id}`)}
               >
                 <Eye size={16} /> Ver detalles
               </Button>

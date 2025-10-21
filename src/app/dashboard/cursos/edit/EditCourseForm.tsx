@@ -1,36 +1,19 @@
 "use client";
 
-/**
- * EditarCurso — Functional parity with CrearCurso
- * - Carga por courseId desde Firestore (getDoc)
- * - Guarda con updateDoc
- * - Tabs: general | unidades | examen | capstone | cierrecurso | cursantes
- * - Units: NO video at unit level (force urlVideo=""), optional duration
- * - Lessons: title (required), text/video/pdf optional, exercises[], finalMessage
- * - Final Exam: introTexto + ejercicios[] (no video)
- * - Capstone: videoUrl + instructions + checklist[] (validate URL)
- * - Closing: textoFinalCurso + textoFinalCursoVideoUrl (validate URL)
- * - Storage uploads: course thumbnail + lesson PDFs
- * - Pricing normalized; toasts via Sonner
- * - On edit: updateDoc; setCursos reemplaza el curso editado
- * - Students: sincroniza altas/bajas (arrayUnion / arrayRemove) en alumnos/{email}.cursosAdquiridos
- */
-
-import React, { useContext, useEffect, useMemo, useState } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
-  collection,
   doc,
   getDoc,
   updateDoc,
   writeBatch,
   arrayUnion,
-  arrayRemove,
-  Firestore,
   Timestamp,
-  setDoc,
+  serverTimestamp,
 } from "firebase/firestore";
-import { ref, uploadBytes, getDownloadURL, FirebaseStorage } from "firebase/storage";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import Exercises from "../cursoItem/exercises/Exercises";
 import {
   FiPlus,
   FiTrash2,
@@ -54,12 +37,8 @@ import {
   FiDollarSign,
   FiGlobe,
 } from "react-icons/fi";
-import Exercises from "../cursoItem/exercises/Exercises";
-import ContextGeneral from "@/contexts/contextGeneral";
-import { storage, db } from "@/lib/firebase";
 
-/* ----------------- Interfaces for Data Structures ----------------- */
-
+/* ----------------- Interfaces ----------------- */
 interface Precio {
   monto: number | string;
   montoDescuento: number | string;
@@ -84,23 +63,16 @@ interface Leccion {
   finalMessage: string;
 }
 
-interface UnidadClosing {
-  examIntro?: string;
-  examExercises?: Ejercicio[];
-  closingText?: string;
-}
-
 interface Unidad {
   id: string;
   titulo: string;
   descripcion: string;
-  urlVideo: string; // Forced empty on save
+  urlVideo: string;
   duracion?: number;
   urlImagen: string;
-  ejercicios: Ejercicio[]; // retained for compat
-  textoCierre: string; // retained for compat
+  ejercicios: Ejercicio[];
+  textoCierre: string;
   lecciones: Leccion[];
-  closing?: UnidadClosing; // para soportar el tab "cierre" a nivel unidad (manteniendo lo que tenías)
 }
 
 interface ExamenFinal {
@@ -138,20 +110,9 @@ interface Alumno {
   nombre?: string;
 }
 
-interface ContextGeneralType {
-  firestore: Firestore | null;
-  storage: FirebaseStorage | null;
-  setLoader: React.Dispatch<React.SetStateAction<boolean>> | null;
-  setCursos: React.Dispatch<React.SetStateAction<(Curso & { id: string })[] | null>> | null;
-  alumnos?: Alumno[];
-  usuarios?: Alumno[];
-  users?: Alumno[];
-}
-
-/* ----------------- small helpers ----------------- */
-const makeId = (): string => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-const isValidUrl = (s: string): boolean => {
+/* ----------------- Helpers ----------------- */
+const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const isValidUrl = (s: string) => {
   try {
     const u = new URL(s);
     return u.protocol === "http:" || u.protocol === "https:";
@@ -159,221 +120,212 @@ const isValidUrl = (s: string): boolean => {
     return false;
   }
 };
-
-export const uploadFile = async (path: string, file: File): Promise<string> => {
+const uploadFile = async (storage: any, path: string, file: File): Promise<string> => {
   const storageRef = ref(storage, path);
   await uploadBytes(storageRef, file);
   return await getDownloadURL(storageRef);
 };
 
-/* ----------------- Props ----------------- */
-interface EditarCursoProps {
+/* ==============================================================
+   COMPONENTE PRINCIPAL
+   ============================================================== */
+export default function EditCourseForm({
+  
+  courseId,
+  onClose,
+}: {
   courseId: string;
   onClose?: () => void;
-}
-function EditarCurso({ courseId, onClose }: EditarCursoProps) {
-  // Firestore a usar
-  const firestore = db;
+}) {
+  const { firestore, storage, alumnos, reloadData } = useAuth();
 
-  // Contexto
-  const ctx = useContext(ContextGeneral) as ContextGeneralType;
-  const { setLoader, setCursos } = ctx || {};
-  const safeSetLoader = typeof setLoader === "function" ? setLoader : () => {};
-  const safeSetCursos = typeof setCursos === "function" ? setCursos : () => {};
-
-  // Alumnos del contexto (para el tab cursantes)
-  const alumnos: Alumno[] = useMemo(
-    () => (ctx?.alumnos || ctx?.usuarios || ctx?.users || []).filter(Boolean),
-    [ctx]
-  );
-
-  /* =========================
-     Tabs principales
-     ========================= */
-  const MAIN_TABS = [
-    { id: "general", label: "General", icon: <FiBookOpen /> },
-    { id: "unidades", label: "Content", icon: <FiLayers /> },
-    { id: "examen", label: "Exam", icon: <FiClipboard /> },
-    { id: "capstone", label: "Project", icon: <FiClipboard /> },
-    { id: "cierrecurso", label: "Closing", icon: <FiFlag /> },
-    { id: "cursantes", label: "Students", icon: <FiUsers /> },
-  ];
-  const [activeMainTab, setActiveMainTab] = useState<string>("general");
-
-  /* =========================
-     Estado del curso
-     ========================= */
-  const [curso, setCurso] = useState<Curso>({
-    titulo: "",
-    descripcion: "",
-    nivel: "",
-    categoria: "",
-    publico: true,
-    videoPresentacion: "",
-    urlImagen: "",
-    precio: { monto: "", montoDescuento: "", descuentoActivo: false },
-    cursantes: [],
-    textoFinalCurso: "",
-    textoFinalCursoVideoUrl: "",
-  });
-
+  const [curso, setCurso] = useState<Curso | null>(null);
   const [unidades, setUnidades] = useState<Unidad[]>([]);
-  const [activeUnidad, setActiveUnidad] = useState<number>(0);
-  const [activeUnitTab, setActiveUnitTab] = useState<"datos" | "lecciones" | "cierre">("datos");
-  const [activeLeccion, setActiveLeccion] = useState<number>(0);
+  const [examenFinal, setExamenFinal] = useState<ExamenFinal>({
+    introTexto: "",
+    ejercicios: [],
+  });
+  const [capstone, setCapstone] = useState<Capstone>({
+    videoUrl: "",
+    instrucciones: "",
+    checklist: [],
+  });
+  const [uploading, setUploading] = useState(false);
+  const [searchAlumno, setSearchAlumno] = useState("");
+  const [activeMainTab, setActiveMainTab] = useState<string>("general");
+  // 🔹 Estados de navegación dentro del contenido
+const [activeUnidad, setActiveUnidad] = useState<number>(0);
+const [activeUnitTab, setActiveUnitTab] = useState<"datos" | "lecciones" | "cierre">("datos");
+const [activeLeccion, setActiveLeccion] = useState<number>(0);
 
-  const [examenFinal, setExamenFinal] = useState<ExamenFinal>({ introTexto: "", ejercicios: [] });
-  const [capstone, setCapstone] = useState<Capstone>({ videoUrl: "", instrucciones: "", checklist: [] });
+console.log("🧩 [EditCourseForm] Props:", { courseId, firestore });
 
-  // Para uploads
-  const [uploading, setUploading] = useState<boolean>(false);
-
-  // Para búsqueda de alumnos
-  const [searchAlumno, setSearchAlumno] = useState<string>("");
-
-  // Para calcular delta de cursantes al guardar
-  const [originalCursantes, setOriginalCursantes] = useState<string[]>([]);
-
-  /* =========================
-     CARGA del curso (getDoc)
-     ========================= */
+  /* ==============================================================
+     🔹 Cargar datos del curso desde Firestore
+     ============================================================== */
   useEffect(() => {
-    let mounted = true;
-
-    const load = async () => {
-      if (!courseId) return;
+    const loadCourse = async () => {
+      if (!firestore || !courseId) return;
       try {
-        safeSetLoader(true);
-        const ref = doc(firestore, "cursos", courseId);
-        const snap = await getDoc(ref);
-
+        const docRef = doc(firestore, "cursos", courseId);
+        const snap = await getDoc(docRef);
         if (!snap.exists()) {
-          toast.error("Course not found");
+          toast.error("El curso no existe o fue eliminado");
           return;
         }
-
-        const data = snap.data() as Partial<Curso>;
-
-        // Normalizar con defaults
-        const unidadesFromDb: Unidad[] = (data.unidades || []).map((u: any) => ({
-          id: u?.id || makeId(),
-          titulo: u?.titulo || "",
-          descripcion: u?.descripcion || "",
-          urlVideo: "", // se fuerza vacío
-          duracion: typeof u?.duracion === "number" ? u.duracion : u?.duracion ? Number(u.duracion) : undefined,
-          urlImagen: u?.urlImagen || "",
-          ejercicios: Array.isArray(u?.ejercicios) ? u?.ejercicios : [],
-          textoCierre: u?.textoCierre || "",
-          lecciones: Array.isArray(u?.lecciones)
-            ? u.lecciones.map((l: any) => ({
-                id: l?.id || makeId(),
-                titulo: l?.titulo || "",
-                texto: l?.texto || "",
-                urlVideo: l?.urlVideo || "",
-                urlImagen: l?.urlImagen || "",
-                pdfUrl: l?.pdfUrl || "",
-                ejercicios: Array.isArray(l?.ejercicios) ? l?.ejercicios : [],
-                finalMessage: l?.finalMessage || "",
-              }))
-            : [],
-          closing: u?.closing
-            ? {
-                examIntro: u?.closing?.examIntro || "",
-                examExercises: Array.isArray(u?.closing?.examExercises) ? u?.closing?.examExercises : [],
-                closingText: u?.closing?.closingText || "",
-              }
-            : undefined,
-        }));
-
-        const precioFromDb: Precio = {
-          monto: (data.precio as any)?.monto ?? "",
-          montoDescuento: (data.precio as any)?.montoDescuento ?? "",
-          descuentoActivo: !!(data.precio as any)?.descuentoActivo,
-        };
-
-        const cursoNormalized: Curso = {
-          titulo: data.titulo || "",
-          descripcion: data.descripcion || "",
-          nivel: data.nivel || "",
-          categoria: data.categoria || "",
-          publico: data.publico ?? true,
-          videoPresentacion: data.videoPresentacion || "",
-          urlImagen: data.urlImagen || "",
-          precio: precioFromDb,
-          cursantes: Array.isArray(data.cursantes) ? data.cursantes : [],
-          textoFinalCurso: data.textoFinalCurso || "",
-          textoFinalCursoVideoUrl: data.textoFinalCursoVideoUrl || "",
-          unidades: unidadesFromDb,
-          examenFinal: {
-            introTexto: data.examenFinal?.introTexto || "",
-            ejercicios: Array.isArray(data.examenFinal?.ejercicios) ? data.examenFinal?.ejercicios : [],
-          },
-          capstone: {
-            videoUrl: data.capstone?.videoUrl || "",
-            instrucciones: data.capstone?.instrucciones || "",
-            checklist: Array.isArray(data.capstone?.checklist) ? data.capstone?.checklist : [],
-          },
-          creadoEn: data.creadoEn as Timestamp | undefined,
-        };
-
-        if (!mounted) return;
-
-        setCurso({
-          titulo: cursoNormalized.titulo,
-          descripcion: cursoNormalized.descripcion,
-          nivel: cursoNormalized.nivel,
-          categoria: cursoNormalized.categoria,
-          publico: cursoNormalized.publico,
-          videoPresentacion: cursoNormalized.videoPresentacion,
-          urlImagen: cursoNormalized.urlImagen,
-          precio: cursoNormalized.precio,
-          cursantes: cursoNormalized.cursantes,
-          textoFinalCurso: cursoNormalized.textoFinalCurso,
-          textoFinalCursoVideoUrl: cursoNormalized.textoFinalCursoVideoUrl,
-        });
-
-        setUnidades(cursoNormalized.unidades || []);
-        setExamenFinal({
-  introTexto: data.examenFinal?.introTexto || "",
-  ejercicios: Array.isArray(data.examenFinal?.ejercicios)
-    ? data.examenFinal.ejercicios
-    : [], // 👈 siempre un array válido
-});;
-        setCapstone(cursoNormalized.capstone || { videoUrl: "", instrucciones: "", checklist: [] });
-        setOriginalCursantes(cursoNormalized.cursantes || []);
-      } catch (e) {
-        console.error(e);
-        toast.error("Error loading the course");
-      } finally {
-        safeSetLoader(false);
+        const data = snap.data() as Curso;
+        setCurso(data);
+        setUnidades(data.unidades || []);
+        setExamenFinal(data.examenFinal || { introTexto: "", ejercicios: [] });
+        setCapstone(data.capstone || { videoUrl: "", instrucciones: "", checklist: [] });
+      } catch (err) {
+        console.error("❌ Error cargando curso:", err);
+        toast.error("Error cargando los datos del curso");
       }
     };
+    loadCourse();
+  }, [firestore, courseId]);
 
-    load();
-    return () => {
-      mounted = false;
+  /* ==============================================================
+     🔹 Guardar cambios
+     ============================================================== */
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!firestore) return toast.error("Firestore no inicializado");
+    if (!curso) return toast.error("Curso no cargado");
+
+    const refCurso = doc(firestore, "cursos", courseId);
+    const payload = {
+      ...curso,
+      unidades,
+      examenFinal,
+      capstone,
+      actualizadoEn: serverTimestamp(),
     };
-  }, [courseId, firestore, safeSetLoader]);
 
-    /* =========================
-     Handlers - Course
-     ========================= */
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    try {
+      await updateDoc(refCurso, payload);
+
+      // Reasignar alumnos (por ahora se mantiene igual)
+      // 🔹 Reasignar alumnos directamente dentro de batches
+if (curso.cursantes?.length) {
+  console.log("🚀 Actualizando cursos adquiridos en batches...");
+
+  for (const email of curso.cursantes.map(e => e.toLowerCase().trim())) {
+    try {
+      let userFound = false;
+
+      // Buscar en batches del 1 al 10
+      for (let i = 1; i <= 10; i++) {
+        const batchRef = doc(firestore, "alumnos", `batch_${i}`);
+        const snap = await getDoc(batchRef);
+        if (!snap.exists()) continue;
+
+        const data = snap.data();
+        const userKey = Object.keys(data).find(
+          (key) => key.startsWith("user_") && data[key]?.email === email
+        );
+
+        if (userKey) {
+          const path = `${userKey}.cursosAdquiridos`;
+          await updateDoc(batchRef, { [path]: arrayUnion(courseId) });
+          console.log(`✅ ${email} actualizado en ${batchRef.id}/${userKey}`);
+          userFound = true;
+          break;
+        }
+      }
+
+      if (!userFound) {
+        console.warn(`⚠️ Usuario ${email} no encontrado en ningún batch`);
+      }
+    } catch (err) {
+      console.error(`❌ Error actualizando ${email}:`, err);
+    }
+  }
+
+  console.log("✅ Todos los alumnos actualizados correctamente.");
+}
+
+      toast.success(`✅ Curso "${curso.titulo}" actualizado correctamente`);
+      await reloadData();
+      onClose?.();
+    } catch (err) {
+      console.error("❌ Error actualizando curso:", err);
+      toast.error("Error al guardar los cambios del curso");
+    }
+  };
+
+  /* ==============================================================
+     🔹 Uploads
+     ============================================================== */
+  const onUploadMiniaturaCurso = async (file?: File) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/"))
+      return toast.error("Upload a valid image");
+    try {
+      setUploading(true);
+      const url = await uploadFile(
+        storage,
+        `cursos/imagenes/${Date.now()}_${file.name}`,
+        file
+      );
+      setCurso((p) => (p ? { ...p, urlImagen: url } : p));
+      toast.success("Thumbnail updated successfully");
+    } catch (e) {
+      console.error(e);
+      toast.error("Error uploading image");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onUploadPdfLeccion = async (
+    unidadIdx: number,
+    leccionIdx: number,
+    file: File | undefined
+  ) => {
+    if (!file) return;
+    if (file.type !== "application/pdf")
+      return toast.error("The file must be a PDF");
+    try {
+      setUploading(true);
+      const url = await uploadFile(
+        storage,
+        `cursos/lecciones/pdf/${Date.now()}_${file.name}`,
+        file
+      );
+      updateLeccion(unidadIdx, leccionIdx, { pdfUrl: url });
+      toast.success("PDF uploaded");
+    } catch (e) {
+      console.error(e);
+      toast.error("Couldn't upload the PDF");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  /* ==============================================================
+     🔹 Handlers
+     ============================================================== */
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
+  ) => {
     const { name, value, type, checked } = e.target;
-    setCurso((prev) => ({
-      ...prev,
-      [name]: type === "checkbox" ? checked : value,
-    }));
+    setCurso((prev) =>
+      prev ? { ...prev, [name]: type === "checkbox" ? checked : value } : prev
+    );
   };
 
-  const handlePrecioChange = (field: keyof Precio, e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.type === "checkbox" ? (e.target as any).checked : e.target.value;
-    setCurso((p) => ({ ...p, precio: { ...p.precio, [field]: v } }));
+  const handlePrecioChange = (
+    field: keyof Precio,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const v = e.target.type === "checkbox" ? e.target.checked : e.target.value;
+    setCurso((p) =>
+      p ? { ...p, precio: { ...p.precio, [field]: v } } : p
+    );
   };
 
-  /* =========================
-     Units
-     ========================= */
   const agregarUnidad = () => {
     const nueva: Unidad = {
       id: makeId(),
@@ -385,31 +337,18 @@ function EditarCurso({ courseId, onClose }: EditarCursoProps) {
       ejercicios: [],
       textoCierre: "",
       lecciones: [],
-      closing: { examIntro: "", examExercises: [], closingText: "" },
     };
     setUnidades((p) => [...p, nueva]);
-    setTimeout(() => {
-      setActiveMainTab("unidades");
-      setActiveUnidad(unidades.length);
-      setActiveUnitTab("datos");
-      setActiveLeccion(0);
-    }, 0);
   };
 
   const borrarUnidad = (idx: number) => {
     setUnidades((p) => p.filter((_, i) => i !== idx));
-    setActiveUnidad((i) => (i > 0 ? i - 1 : 0));
-    setActiveUnitTab("datos");
-    setActiveLeccion(0);
   };
 
   const updateUnidad = (idx: number, patch: Partial<Unidad>) => {
     setUnidades((p) => p.map((u, i) => (i === idx ? { ...u, ...patch } : u)));
   };
 
-  /* =========================
-     Lessons
-     ========================= */
   const agregarLeccion = (unidadIdx: number) => {
     const nueva: Leccion = {
       id: makeId(),
@@ -422,261 +361,44 @@ function EditarCurso({ courseId, onClose }: EditarCursoProps) {
       finalMessage: "",
     };
     setUnidades((p) =>
-      p.map((u, i) => (i === unidadIdx ? { ...u, lecciones: [...u.lecciones, nueva] } : u))
+      p.map((u, i) =>
+        i === unidadIdx ? { ...u, lecciones: [...u.lecciones, nueva] } : u
+      )
     );
-    setTimeout(() => setActiveLeccion(unidades[unidadIdx]?.lecciones?.length || 0), 0);
   };
 
   const borrarLeccion = (unidadIdx: number, leccionIdx: number) => {
     setUnidades((p) =>
       p.map((u, i) =>
-        i === unidadIdx ? { ...u, lecciones: u.lecciones.filter((_, j) => j !== leccionIdx) } : u
+        i === unidadIdx
+          ? { ...u, lecciones: u.lecciones.filter((_, j) => j !== leccionIdx) }
+          : u
       )
     );
-    setActiveLeccion((i) => (i > 0 ? i - 1 : 0));
   };
 
-  const updateLeccion = (unidadIdx: number, leccionIdx: number, patch: Partial<Leccion>) => {
+  const updateLeccion = (
+    unidadIdx: number,
+    leccionIdx: number,
+    patch: Partial<Leccion>
+  ) => {
     setUnidades((p) =>
       p.map((u, i) =>
         i === unidadIdx
           ? {
               ...u,
-              lecciones: u.lecciones.map((l, j) => (j === leccionIdx ? { ...l, ...patch } : l)),
+              lecciones: u.lecciones.map((l, j) =>
+                j === leccionIdx ? { ...l, ...patch } : l
+              ),
             }
           : u
       )
     );
   };
 
-  /* =========================
-     Uploads
-     ========================= */
-  const onUploadMiniaturaCurso = async (file: File | undefined) => {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) return toast.error("Upload a valid image");
-    try {
-      setUploading(true);
-      // mantenemos la misma ruta que tenías en crear (paridad)
-      const url = await uploadFile(`cursos/lecciones/pdf/${Date.now()}_${file.name}`, file);
-      setCurso((p) => ({ ...p, urlImagen: url }));
-      toast.success("Thumbnail uploaded");
-    } catch (e: any) {
-      console.error(e);
-      toast.error("Couldn't upload thumbnail");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const onUploadPdfLeccion = async (unidadIdx: number, leccionIdx: number, file: File | undefined) => {
-    if (!file) return;
-    if (file.type !== "application/pdf") return toast.error("The file must be a PDF");
-    try {
-      setUploading(true);
-      const url = await uploadFile(`cursos/lecciones/pdf/${Date.now()}_${file.name}`, file);
-      updateLeccion(unidadIdx, leccionIdx, { pdfUrl: url });
-      toast.success("PDF uploaded");
-    } catch (e: any) {
-      console.error(e);
-      toast.error("Couldn't upload the PDF");
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  /* =========================
-     Students helpers
-     ========================= */
-  const toggleCursante = (email: string) => {
-    setCurso((p) => {
-      const set = new Set(p.cursantes || []);
-      if (set.has(email)) set.delete(email);
-      else set.add(email);
-      return { ...p, cursantes: Array.from(set) };
-    });
-  };
-
-  const addAllFiltered = (emails: string[]) => {
-    setCurso((p) => {
-      const set = new Set(p.cursantes || []);
-      emails.forEach((e) => set.add(e));
-      return { ...p, cursantes: Array.from(set) };
-    });
-  };
-
-  const removeAllSelected = () => {
-    setCurso((p) => ({ ...p, cursantes: [] }));
-  };
-
-  const filteredAlumnos: Alumno[] = useMemo(() => {
-    const q = (searchAlumno || "").toLowerCase().trim();
-    const list = Array.isArray(alumnos) ? alumnos : [];
-    if (!q) return list;
-    return list.filter((a) => {
-      const name = (a?.displayName || a?.nombre || "").toLowerCase();
-      const mail = (a?.email || "").toLowerCase();
-      return name.includes(q) || mail.includes(q);
-    });
-  }, [alumnos, searchAlumno]);
-
-    /* =========================
-     Guardar cambios
-     ========================= */
-
-     /** 🔹 Elimina cualquier undefined recursivamente (Firestore-safe) */
-function removeUndefined(obj: any): any {
-  if (Array.isArray(obj)) {
-    return obj.map(removeUndefined);
-  } else if (obj && typeof obj === "object") {
-    const cleaned: any = {};
-    for (const [key, value] of Object.entries(obj)) {
-      if (value !== undefined) {
-        cleaned[key] = removeUndefined(value);
-      }
-    }
-    return cleaned;
-  }
-  return obj;
-}
-  const handleSubmit = async (e: React.FormEvent) => {
-  e.preventDefault();
-
-  if (!firestore) {
-    toast.error("Firestore no inicializado");
-    return;
-  }
-
-  if (!curso.titulo?.trim()) return toast.error("The course needs a title");
-  if (!Array.isArray(unidades) || unidades.length === 0)
-    return toast.error("Add at least one unit");
-
-  const cleanObject = (obj: any): any => {
-  if (Array.isArray(obj)) {
-    return obj.map(cleanObject); // 👈 no filtramos arrays vacíos
-  } else if (obj && typeof obj === "object") {
-    const result: any = {};
-    Object.entries(obj).forEach(([k, v]) => {
-      if (v === undefined) return;
-      if (v === "") result[k] = null;
-      else result[k] = cleanObject(v);
-    });
-    return result;
-  }
-  return obj;
-};
-
-
-  // Normalizar unidades y eliminar campos vacíos
-  const unidadesToSave: Unidad[] = unidades.map((u) =>
-    cleanObject({
-      id: u.id || makeId(),
-      titulo: u.titulo || "",
-      descripcion: u.descripcion || "",
-      urlVideo: "",
-      urlImagen: u.urlImagen || "",
-      duracion: u.duracion ? Number(u.duracion) : null,
-      ejercicios: Array.isArray(u.ejercicios) ? u.ejercicios : [],
-      textoCierre: u.textoCierre || "",
-      lecciones: (u.lecciones || []).map((l) =>
-        cleanObject({
-          id: l.id || makeId(),
-          titulo: l.titulo || "",
-          texto: l.texto || "",
-          urlVideo: l.urlVideo || "",
-          urlImagen: l.urlImagen || "",
-          pdfUrl: l.pdfUrl || "",
-          ejercicios: Array.isArray(l.ejercicios) ? l.ejercicios : [],
-          finalMessage: l.finalMessage || "",
-        })
-      ),
-      closing: u.closing
-        ? {
-            examIntro: u.closing.examIntro || "",
-            examExercises: Array.isArray(u.closing.examExercises)
-              ? u.closing.examExercises
-              : [],
-            closingText: u.closing.closingText || "",
-          }
-        : null,
-    })
-  );
-
-  const payloadToUpdate = cleanObject({
-  ...curso,
-  precio: {
-    monto: curso.precio?.monto === "" ? 0 : Number(curso.precio?.monto ?? 0),
-    montoDescuento:
-      curso.precio?.montoDescuento === "" ? 0 : Number(curso.precio?.montoDescuento ?? 0),
-    descuentoActivo: !!curso.precio?.descuentoActivo,
-  },
-  unidades: unidadesToSave,
-  examenFinal: {
-    introTexto: examenFinal.introTexto || "",
-    ejercicios: Array.isArray(examenFinal.ejercicios)
-      ? examenFinal.ejercicios
-      : [], // 👈 siempre un array
-  },
-  capstone: cleanObject(capstone),
-});
-
-  console.log("📦 Payload enviado a Firestore:", payloadToUpdate);
-
-  safeSetLoader(true);
-  try {
-    const cursoRef = doc(firestore, "cursos", courseId);
-    console.log("🔥 examenFinal enviado:", examenFinal);
-console.log("🔥 payload final:", JSON.stringify(payloadToUpdate, null, 2));
-
-const sanitizeNulls = (obj: any): any => {
-  if (Array.isArray(obj)) return obj.map(sanitizeNulls);
-  if (obj && typeof obj === "object") {
-    const clean: any = {};
-    Object.entries(obj).forEach(([k, v]) => {
-      if (v !== null && v !== undefined) clean[k] = sanitizeNulls(v);
-    });
-    return clean;
-  }
-  return obj;
-};
-
-const sanitizedPayload = sanitizeNulls(payloadToUpdate);
-await setDoc(cursoRef, sanitizedPayload, { merge: true });
-try {
-  const cursoRef = doc(firestore, "cursos", courseId);
-  await setDoc(cursoRef, sanitizedPayload, { merge: true });
-
-  // ✅ Traer curso actualizado
-  const snap = await getDoc(cursoRef);
-  const updatedCurso = { id: courseId, ...snap.data() };
-
-  // ✅ Actualizar estado global/local
-  safeSetCursos((prev: any) => {
-    if (!Array.isArray(prev)) return [updatedCurso];
-    return prev.map((c: any) => (c.id === courseId ? updatedCurso : c));
-  });
-
-  console.log("✅ Firestore actualizado y refrescado:", updatedCurso);
-  toast.success("✅ Changes saved");
-  onClose?.();
-} catch (err) {
-  console.error("❌ Firestore error:", err);
-  toast.error("Error saving changes");
-} finally {
-  safeSetLoader(false);
-}
-  } catch (err) {
-    console.error("❌ Firestore error:", err);
-    toast.error("Error saving changes");
-  } finally {
-    safeSetLoader(false);
-  }
-};
-
-
-  /* =========================
-     UX: ESC para cerrar + bloquear scroll
-     ========================= */
+  /* ==============================================================
+     🔹 UX: ESC to close + scroll lock
+     ============================================================== */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose?.();
     document.addEventListener("keydown", onKey);
@@ -688,11 +410,74 @@ try {
     };
   }, [onClose]);
 
+  /* ==============================================================
+     🔹 Filtrado de alumnos
+     ============================================================== */
+  const filteredAlumnos = useMemo(() => {
+    const q = searchAlumno.toLowerCase().trim();
+    const list = Array.isArray(alumnos) ? alumnos : [];
+    if (!q) return list;
+    return list.filter((a) => {
+      const name = (a?.displayName || a?.nombre || "").toLowerCase();
+      const mail = (a?.email || "").toLowerCase();
+      return name.includes(q) || mail.includes(q);
+    });
+  }, [alumnos, searchAlumno]);
+
+  /* ==============================================================
+     🔹 Control de alumnos (toggle, añadir, quitar)
+     ============================================================== */
+  const toggleCursante = (email: string) => {
+    setCurso((p) => {
+      if (!p) return p;
+      const set = new Set(p.cursantes || []);
+      if (set.has(email)) set.delete(email);
+      else set.add(email);
+      return { ...p, cursantes: Array.from(set) };
+    });
+  };
+
+  const addAllFiltered = (emails: string[]) => {
+    setCurso((p) => {
+      if (!p) return p;
+      const set = new Set(p.cursantes || []);
+      emails.forEach((e) => set.add(e));
+      return { ...p, cursantes: Array.from(set) };
+    });
+  };
+
+  const removeAllSelected = () => {
+    setCurso((p) => (p ? { ...p, cursantes: [] } : p));
+  };
+
+  /* ==============================================================
+     🔹 Tabs y opciones varias
+     ============================================================== */
+  const MAIN_TABS = [
+    { id: "general", label: "General", icon: <FiBookOpen /> },
+    { id: "unidades", label: "Content", icon: <FiLayers /> },
+    { id: "examen", label: "Exam", icon: <FiClipboard /> },
+    { id: "capstone", label: "Project", icon: <FiClipboard /> },
+    { id: "cierrecurso", label: "Closing", icon: <FiFlag /> },
+    { id: "cursantes", label: "Students", icon: <FiUsers /> },
+  ];
+
   const niveles = [
     { value: "principiante", label: "Beginner" },
     { value: "intermedio", label: "Intermediate" },
     { value: "avanzado", label: "Advanced" },
   ];
+// ✅ Evitar crash mientras carga
+if (!curso) {
+  return (
+    <div className="flex items-center justify-center h-screen text-gray-600">
+      Loading course data...
+    </div>
+  );
+}
+
+  // 👇 HASTA ACÁ
+
   /* =========================
      RENDER
      ========================= */
@@ -1684,4 +1469,4 @@ try {
   );
 }
 
-export default EditarCurso;
+

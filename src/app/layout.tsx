@@ -4,15 +4,12 @@ import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { UsersProvider } from '@/contexts/UserContext';
-import ContextGeneralProvider from '@/contexts/ContextGeneralProvider';
-
-
 
 const inter = Inter({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
   title: 'Mi App Roles',
-  description: 'App con auth por roles',
+  description: 'App con autenticación y roles',
 };
 
 export default function RootLayout({
@@ -23,19 +20,13 @@ export default function RootLayout({
   return (
     <html lang="es">
       <body className={inter.className}>
-        <ContextGeneralProvider>
+        {/* ✅ AuthProvider en el nivel global */}
         <AuthProvider>
           <UsersProvider>
-           
-              <div className="min-h-screen bg-gray-50">
-                {children}
-              </div>
-            
+            <main className="min-h-screen bg-gray-50">{children}</main>
           </UsersProvider>
         </AuthProvider>
-        </ContextGeneralProvider>
       </body>
     </html>
-
   );
 }
