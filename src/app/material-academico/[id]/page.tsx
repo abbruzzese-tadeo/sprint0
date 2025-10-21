@@ -178,13 +178,13 @@ useEffect(() => {
       };
     });
 
-    // Cierre de unidad
+    // 2️⃣ Cierre / examen final de la unidad (solo 1)
     if (u.closing && (u.closing.examIntro || u.closing.examExercises?.length)) {
       lessons.push({
         key: buildKey(unitId, "closing"),
         id: "closing",
         unitId,
-        title: "Cierre de la unidad",
+        title: "🧠 Cierre de la unidad",
         text: u.closing.examIntro || "",
         ejercicios: Array.isArray(u.closing.examExercises)
           ? u.closing.examExercises
@@ -200,54 +200,10 @@ useEffect(() => {
     });
   });
 
-  // 2️⃣ Examen final (si existe)
-  if (curso.examenFinal?.introTexto || curso.examenFinal?.ejercicios?.length) {
-    normalized.push({
-      id: "final-exam",
-      title: "🧠 Examen final",
-      lessons: [
-        {
-          key: buildKey("final", "exam"),
-          id: "exam",
-          unitId: "final",
-          title: "Examen Final del Curso",
-          text: curso.examenFinal.introTexto || "",
-          ejercicios: Array.isArray(curso.examenFinal.ejercicios)
-            ? curso.examenFinal.ejercicios
-            : [],
-        },
-      ],
-    });
-  }
-
-  // 3️⃣ Capstone (si tiene instrucciones o video)
-  if (
-    curso.capstone &&
-    (curso.capstone.instrucciones ||
-      curso.capstone.videoUrl ||
-      curso.capstone.checklist?.length)
-  ) {
-    normalized.push({
-      id: "capstone",
-      title: "💼 Proyecto Final (Capstone)",
-      lessons: [
-        {
-          key: buildKey("capstone", "project"),
-          id: "project",
-          unitId: "capstone",
-          title: "Entrega del Proyecto Final",
-          text: curso.capstone.instrucciones || "",
-          videoUrl: curso.capstone.videoUrl || "",
-          ejercicios: [],
-        },
-      ],
-    });
-  }
-
-  // 4️⃣ Cierre final del curso
+  // 3️⃣ Cierre final del curso (video + mensaje final)
   if (curso.textoFinalCurso || curso.textoFinalCursoVideoUrl) {
     normalized.push({
-      id: "closing",
+      id: "closing-course",
       title: "🎓 Cierre del Curso",
       lessons: [
         {
@@ -263,10 +219,11 @@ useEffect(() => {
     });
   }
 
-  console.log("✅ Unidades normalizadas:", normalized);
+  console.log("✅ Unidades normalizadas (final):", normalized);
   setUnits(normalized);
   if (normalized.length > 0) setExpandedUnits({ 0: true });
 }, [curso]);
+
 
 /* =========================================================
    🔹 Cargar progreso desde Firestore (solo alumnos)
@@ -577,85 +534,167 @@ useEffect(() => {
 function ExerciseRunner({
   ejercicios = [],
   onSubmit,
+  lessonKey,
+  saveProgress,
+  userEmail,
+  courseId,
 }: {
   ejercicios: any[];
-  onSubmit?: (result: { correct: number; total: number }) => void;
+  onSubmit?: (result: { correct: number; total: number; attempts: number }) => void;
+  lessonKey: string;
+  saveProgress: (lessonKey: string, data: any) => Promise<void>;
+  userEmail: string;
+  courseId: string;
 }) {
   const [answers, setAnswers] = useState<Record<string, any>>({});
-  const [submitted, setSubmitted] = useState(false);
-  const [score, setScore] = useState<{ correct: number; total: number }>({
-    correct: 0,
-    total: 0,
-  });
+  const [attempts, setAttempts] = useState(0);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(
+    null
+  );
+  const [showSolution, setShowSolution] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   const handleAnswer = (id: string, value: any) => {
     setAnswers((prev) => ({ ...prev, [id]: value }));
+    setFeedback(null);
   };
 
-  const evaluate = () => {
+  const evalOne = (ex: any): boolean => {
+    const a = answers[ex.id];
+    switch (ex.type) {
+      case "multiple_choice":
+        return a === ex.correctIndex;
+      case "true_false":
+        return a === ex.answer;
+      case "fill_blank":
+        return (
+          Array.isArray(a) &&
+          Array.isArray(ex.answers) &&
+          a.every(
+            (v, i) =>
+              v?.trim()?.toLowerCase() ===
+              ex.answers[i]?.trim()?.toLowerCase()
+          )
+        );
+      case "reorder":
+        return (
+          Array.isArray(a) &&
+          JSON.stringify(a) === JSON.stringify(ex.correctOrder)
+        );
+      case "matching":
+        return (
+          Array.isArray(a) &&
+          ex.pairs?.every(
+            (p: any, i: number) =>
+              p.left === a[i]?.left && p.right === a[i]?.right
+          )
+        );
+      case "text":
+        return true; // no autograding
+      default:
+        return false;
+    }
+  };
+
+  const evaluate = async () => {
+    const total = ejercicios.length;
     let correct = 0;
+    const details: Record<string, any> = {};
+
     ejercicios.forEach((ex) => {
-      const a = answers[ex.id];
-      switch (ex.type) {
-        case "multiple_choice":
-          if (a === ex.correctIndex) correct++;
-          break;
-
-        case "true_false":
-          if (a === ex.answer) correct++;
-          break;
-
-        case "fill_blank":
-          if (
-            Array.isArray(a) &&
-            Array.isArray(ex.answers) &&
-            a.every(
-              (v, i) =>
-                v?.trim()?.toLowerCase() ===
-                ex.answers[i]?.trim()?.toLowerCase()
-            )
-          )
-            correct++;
-          break;
-
-        case "reorder":
-          if (
-            Array.isArray(a) &&
-            JSON.stringify(a) === JSON.stringify(ex.correctOrder)
-          )
-            correct++;
-          break;
-
-        case "matching":
-          if (
-            Array.isArray(a) &&
-            ex.pairs.every(
-              (pair: any, i: number) =>
-                pair.right === a[i]?.right && pair.left === a[i]?.left
-            )
-          )
-            correct++;
-          break;
-
-        case "text":
-          // Los ejercicios de texto no se corrigen automáticamente
-          correct += 0;
-          break;
-      }
+      const isOk = evalOne(ex);
+      if (isOk) correct++;
+      details[ex.id] = {
+        correct: isOk,
+        answer: answers[ex.id],
+        attempts: attempts + 1,
+        timestamp: Date.now(),
+      };
     });
 
-    const total = ejercicios.length;
-    const result = { correct, total };
-    setScore(result);
-    setSubmitted(true);
-    onSubmit?.(result);
+    const ok = correct === total;
+    const nextAttempts = attempts + 1;
+    setAttempts(nextAttempts);
+
+    if (ok) {
+      setFeedback({ ok: true, msg: "✅ ¡Correcto! ¡Felicitaciones!" });
+      onSubmit?.({ correct, total, attempts: nextAttempts });
+
+      // Guardamos en Firestore (por alumno, curso, lección)
+      setSubmitting(true);
+      try {
+        await saveProgress(lessonKey, {
+          exSubmitted: true,
+          exPassed: true,
+          attempts: nextAttempts,
+          score: { correct, total },
+          answers: details,
+          userEmail,
+          courseId,
+        });
+        console.log("💾 [DEBUG] Progreso de ejercicios guardado:", details);
+      } catch (err) {
+        console.error("❌ Error al guardar resultado:", err);
+      } finally {
+        setSubmitting(false);
+      }
+    } else {
+      setFeedback({
+        ok: false,
+        msg:
+          nextAttempts >= 2
+            ? "❌ Incorrecto. Mostrando solución."
+            : "❌ Incorrecto. Volvé a intentarlo.",
+      });
+      if (nextAttempts >= 2) setShowSolution(true);
+
+      // Guardamos intento fallido también
+      try {
+        await saveProgress(lessonKey, {
+          exSubmitted: false,
+          exPassed: false,
+          attempts: nextAttempts,
+          answers: details,
+          userEmail,
+          courseId,
+        });
+      } catch (err) {
+        console.error("❌ Error guardando intento:", err);
+      }
+    }
+  };
+
+  const renderSolution = (ex: any) => {
+    switch (ex.type) {
+      case "multiple_choice":
+        return (
+          <div className="text-xs text-slate-400">
+            Correcta: <b>{ex.options?.[ex.correctIndex]}</b>
+          </div>
+        );
+      case "true_false":
+        return (
+          <div className="text-xs text-slate-400">
+            La respuesta correcta es:{" "}
+            <b>{ex.answer ? "Verdadero" : "Falso"}</b>
+          </div>
+        );
+      case "fill_blank":
+        return (
+          <div className="text-xs text-slate-400">
+            Respuestas: {ex.answers?.join(", ")}
+          </div>
+        );
+      default:
+        return null;
+    }
   };
 
   return (
     <div className="bg-slate-900/60 border border-slate-800 p-4 rounded-lg mt-6 space-y-6">
       <h3 className="text-lg font-bold text-yellow-400">Ejercicios</h3>
 
-      {ejercicios.map((ex: any) => (
+      {ejercicios.map((ex) => (
         <div
           key={ex.id}
           className="border border-slate-700 rounded-lg p-3 space-y-2"
@@ -664,7 +703,7 @@ function ExerciseRunner({
             {ex.question || ex.prompt || ex.statement}
           </p>
 
-          {/* MULTIPLE CHOICE */}
+          {/* OPCIÓN MÚLTIPLE */}
           {ex.type === "multiple_choice" && (
             <div className="space-y-1">
               {ex.options.map((opt: string, idx: number) => (
@@ -684,7 +723,7 @@ function ExerciseRunner({
             </div>
           )}
 
-          {/* TRUE / FALSE */}
+          {/* TRUE/FALSE */}
           {ex.type === "true_false" && (
             <div className="flex gap-4">
               {["Verdadero", "Falso"].map((label, idx) => {
@@ -707,7 +746,7 @@ function ExerciseRunner({
             </div>
           )}
 
-          {/* FILL BLANK */}
+          {/* RELLENAR ESPACIOS */}
           {ex.type === "fill_blank" && (
             <div className="flex flex-col gap-2">
               {ex.answers.map((_: any, idx: number) => (
@@ -730,77 +769,45 @@ function ExerciseRunner({
             </div>
           )}
 
-          {/* REORDER */}
-          {ex.type === "reorder" && (
-            <div className="flex flex-col gap-2 text-sm text-slate-300">
-              <p className="text-xs text-slate-400 mb-1">
-                Ordená los elementos en el orden correcto:
-              </p>
-              {ex.items.map((item: string, idx: number) => (
-                <div
-                  key={idx}
-                  className="px-3 py-2 bg-slate-800 rounded border border-slate-700"
-                >
-                  {idx + 1}. {item}
-                </div>
-              ))}
-              <p className="text-xs text-slate-500 mt-2">
-                (Funcionalidad drag-and-drop pendiente)
-              </p>
-            </div>
-          )}
-
-          {/* MATCHING */}
-          {ex.type === "matching" && (
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              {ex.pairs.map((pair: any, idx: number) => (
-                <div
-                  key={idx}
-                  className="flex justify-between bg-slate-800 border border-slate-700 rounded px-3 py-2"
-                >
-                  <span>{pair.left}</span>
-                  <span className="text-slate-400">↔</span>
-                  <span>{pair.right}</span>
-                </div>
-              ))}
-              <p className="col-span-2 text-xs text-slate-500 mt-2">
-                (Emparejamiento manual pendiente)
-              </p>
-            </div>
-          )}
-
-          {/* TEXTO LIBRE */}
-          {ex.type === "text" && (
-            <textarea
-              rows={4}
-              maxLength={ex.maxLength || 500}
-              placeholder="Escribe tu respuesta aquí..."
-              className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm"
-              value={answers[ex.id] || ""}
-              onChange={(e) => handleAnswer(ex.id, e.target.value)}
-            />
-          )}
+          {showSolution && renderSolution(ex)}
         </div>
       ))}
 
       <button
+        disabled={submitting}
         onClick={evaluate}
-        disabled={submitted}
         className="px-4 py-2 bg-yellow-400 text-black font-semibold rounded hover:bg-yellow-300"
       >
-        {submitted ? "Enviado" : "Enviar respuestas"}
+        {submitting ? "Guardando..." : "Comprobar respuestas"}
       </button>
 
-      {submitted && (
-        <div className="mt-2 text-sm text-slate-300">
-          Puntuación:{" "}
-          <span className="text-yellow-400 font-bold">{score.correct}</span> /{" "}
-          {score.total}
+      {feedback && (
+        <div
+          className={`text-sm ${
+            feedback.ok ? "text-emerald-400" : "text-rose-400"
+          }`}
+        >
+          {feedback.msg}
         </div>
       )}
     </div>
   );
 }
+
+
+
+// Estado para navegación dentro de ejercicios
+const [currentExercise, setCurrentExercise] = useState(0);
+
+const nextExercise = () => {
+  if (activeLesson?.ejercicios && currentExercise < activeLesson.ejercicios.length - 1) {
+    setCurrentExercise((prev) => prev + 1);
+  }
+};
+
+const prevExercise = () => {
+  if (currentExercise > 0) setCurrentExercise((prev) => prev - 1);
+};
 
   /* =========================================================
      🔹 Guards de acceso
@@ -887,379 +894,279 @@ function CapstoneForm({
      🔹 UI inicial (básica)
      ========================================================= */
   return (
-    <div className="min-h-screen bg-[#0B1220] text-slate-200 flex">
-      {/* Sidebar izquierda */}
-      <aside className="w-72 shrink-0 border-r border-slate-800 bg-[#0F172A] overflow-y-auto">
-        <div className="p-3 border-b border-slate-800 flex items-center justify-between">
-          <button
-            onClick={() => router.push("/dashboard")}
-            className="flex items-center gap-2 text-sm text-slate-300 hover:text-yellow-400"
-          >
-            <FiChevronLeft className="text-yellow-400" />
-            Volver al inicio
-          </button>
-        </div>
-        <div className="p-4 border-b border-slate-800">
-          <h1 className="text-lg font-bold text-white line-clamp-1">
-            {curso.titulo}
-          </h1>
-          <p className="text-xs text-slate-400 line-clamp-2">
-            {curso.descripcion}
-          </p>
-        </div>
-      </aside>
+  <div className="flex min-h-screen bg-[#0B1220] text-slate-200">
+    {/* ======================= SIDEBAR IZQUIERDA ======================= */}
+    <aside className="w-72 shrink-0 border-r border-slate-800 bg-[#0F172A] overflow-y-auto">
+      <div className="p-4 border-b border-slate-800">
+        <button
+          onClick={() => router.push("/dashboard")}
+          className="flex items-center gap-2 text-sm text-slate-300 hover:text-yellow-400"
+        >
+          <FiChevronLeft className="text-yellow-400" />
+          Volver al inicio
+        </button>
+      </div>
 
-      {/* Contenido principal */}
-      <main className="flex-1 p-6 overflow-y-auto">
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-sm text-slate-400">Progreso</span>
-            <span className="text-sm font-semibold text-yellow-400">
-              {progressPercent}%
-            </span>
+      <div className="p-4 border-b border-slate-800">
+        <h1 className="text-lg font-bold text-white line-clamp-1">{curso.titulo}</h1>
+        <p className="text-xs text-slate-400 line-clamp-2">{curso.descripcion}</p>
+        <div className="mt-3 h-2 bg-slate-800 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-yellow-400 rounded-full transition-all duration-500"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+      </div>
+
+      <nav className="p-3 space-y-2">
+        {units.map((u, uIdx) => {
+  // Si es el cierre global del curso, NO lo tratamos como "Unit"
+  if (u.id === "closing-course") {
+    const l = u.lessons?.[0]; // siempre 1
+    const done = l && (progress[l.key]?.videoEnded || progress[l.key]?.exSubmitted);
+    const active = activeU === uIdx && activeL === 0;
+
+    return (
+      <div key={u.id} className="mt-4 pt-3 border-t border-slate-800">
+        <div className="px-3 py-2 font-semibold text-slate-200">
+          🎓 Cierre del curso
+        </div>
+
+        <button
+          onClick={() => {
+            setActiveU(uIdx);
+            setActiveL(0);
+          }}
+          className={`block w-full text-left px-5 py-1.5 rounded-md text-sm transition ${
+            active
+              ? "bg-yellow-400/10 text-yellow-300 border border-yellow-400/30"
+              : done
+              ? "text-emerald-400 hover:bg-slate-800"
+              : "text-slate-300 hover:bg-slate-800"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <span className="truncate">{l?.title || "Cierre del Curso"}</span>
+            {done && <FiCheckCircle size={12} className="text-emerald-400" />}
           </div>
-          <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-yellow-400 transition-all duration-500 rounded-full"
-              style={{ width: `${progressPercent}%` }}
-            />
-          </div>
-        </div>
+        </button>
+      </div>
+    );
+  }
 
-        {/* === HEADER / NAV SUPERIOR === */}
-<header className="sticky top-0 z-40 bg-[#0F172A]/95 backdrop-blur border-b border-slate-800 px-3 sm:px-4 py-2.5 mb-6 flex items-center justify-between">
-  {/* Botón “Volver” (izquierda) */}
-  <button
-    onClick={() => router.push("/dashboard")}
-    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-700 text-slate-200 hover:bg-slate-800"
-  >
-    <FiChevronLeft />
-    <span className="text-sm">Volver</span>
-  </button>
+  // Para las unidades normales, calculamos el número real (ignora closing-course)
+  const unitNumber =
+    units.slice(0, uIdx).filter((x) => x.id !== "closing-course").length + 1;
 
-  {/* Título curso (centro) */}
-  <h1 className="text-sm sm:text-lg font-semibold text-white truncate">
-    {curso?.titulo || "Curso"}
-  </h1>
-
-  {/* Botón de menú (derecha, visible solo en mobile) */}
-  <button
-    type="button"
-    className="lg:hidden inline-flex items-center justify-center w-10 h-10 rounded-xl border border-slate-700 text-slate-200 hover:bg-slate-800"
-    onClick={() => setMobileNavOpen(true)}
-  >
-    <FiMenu size={18} />
-  </button>
-</header>
-
-
-        <h2 className="text-xl font-bold text-white mb-3">
-          {units[activeU]?.title || "Unidad"}
-        </h2>
-
-        <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
-          <h3 className="text-lg font-semibold text-yellow-400 mb-3">
-            {activeLesson?.title || "Lección actual"}
-          </h3>
-
-          {/* Video principal */}
-         {resolvedVideoUrl && (
-  <iframe
-    src={resolvedVideoUrl}
-    title="Video del curso"
-    className="w-full aspect-video rounded-lg bg-black mb-4"
-    allow="autoplay; fullscreen"
-    allowFullScreen
-  />
-)}
-
-
-
-
-          {/* Texto */}
-          {activeLesson?.text && (
-  <div className="text-slate-300 whitespace-pre-line">
-    {activeLesson.text}
-  </div>
-)}
-
-          {/* === EJERCICIOS === */}
-{Array.isArray(activeLesson?.ejercicios) && activeLesson.ejercicios.length > 0 && (
-  <div className="mt-6">
-    <ExerciseRunner
-      ejercicios={activeLesson.ejercicios}
-      onSubmit={(result: { correct: number; total: number }) => {
-        const passed = result.correct === result.total;
-        saveProgressAdvanced(activeLesson.key, {
-          exSubmitted: true,
-          exPassed: passed,
-          score: result,
-        });
-        toast[passed ? "success" : "info"](
-          passed ? "✅ ¡Ejercicio aprobado!" : "⚠️ Algunas respuestas incorrectas"
-        );
-      }}
-    />
-  </div>
-)}
-
-{/* === BOTÓN SIGUIENTE === */}
-<div className="mt-6 flex justify-end">
-  <button
-    onClick={goNextLesson}
-    className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold shadow bg-yellow-400 text-slate-900 hover:bg-yellow-300"
-  >
-    Siguiente lección
-    <FiChevronRight />
-  </button>
-</div>
-
-{/* === TEXTO DE CIERRE DE UNIDAD SIN EXAMEN === */}
-{activeLesson?.type === "text" &&
-  !Array.isArray(unidad?.closing?.examExercises) && (
-    <div className="mt-8 bg-slate-900/70 border border-slate-800 rounded-xl p-6">
-      <h3 className="text-lg font-bold text-yellow-400 mb-2">
-        Cierre de la unidad
-      </h3>
-      {typeof unidad?.closing?.texto === "string" && (
-        <p className="text-slate-300 whitespace-pre-line">
-          {unidad.closing.texto}
-        </p>
-      )}
-    </div>
-  )}
-
-{/* === EXAMEN FINAL DE LA UNIDAD === */}
-{activeLesson?.type === "text" &&
-  Array.isArray(unidad?.closing?.examExercises) &&
-  unidad.closing.examExercises.length > 0 && (
-    <div className="mt-10 bg-slate-900/70 border border-slate-800 rounded-xl p-6">
-      <h3 className="text-xl font-bold text-yellow-400 mb-3">
-        🧠 Examen final de la unidad
-      </h3>
-
-      {/* Texto introductorio */}
-      {unidad?.closing?.examIntro && (
-        <p className="text-slate-300 mb-6 whitespace-pre-line">
-          {unidad.closing.examIntro}
-        </p>
-      )}
-
-      {/* Ejercicios del examen */}
-      <ExerciseRunner
-        ejercicios={unidad.closing.examExercises}
-        onSubmit={(result: { correct: number; total: number }) => {
-          const passed = result.correct === result.total;
-          saveProgressAdvanced(activeLesson.key, {
-            exSubmitted: true,
-            exPassed: passed,
-            score: result,
-          });
-          toast[passed ? "success" : "info"](
-            passed
-              ? "✅ ¡Examen aprobado!"
-              : "⚠️ Algunas respuestas incorrectas"
-          );
-
-          // marcar cierre de unidad
-          saveProgressAdvanced(`closing-${unidad.id}`, {
-            exSubmitted: true,
-            exPassed: passed,
-            videoEnded: true,
-          });
-
-          // pasar a la siguiente unidad
-          const nextUnit = curso?.unidades?.[unidadIndex + 1];
-          if (nextUnit) {
-            toast.success("Avanzando a la siguiente unidad...");
-            setUnidadIndex(unidadIndex + 1);
-            setLeccionIndex(0);
-          } else {
-            toast.success("🎓 ¡Completaste todas las unidades!");
-          }
-        }}
-      />
-    </div>
-  )}
-
-
-{/* === CAPSTONE FINAL === */}
-{activeLesson?.type === "capstone" && (
-  <div className="mt-10 border border-slate-800 bg-slate-900/70 rounded-xl p-6">
-    <h3 className="text-xl font-bold text-yellow-400 mb-4">
-      🧩 Proyecto final del curso
-    </h3>
-    <p className="text-slate-300 mb-4">
-      Subí el enlace a tu entrega (por ejemplo, un documento o presentación en Google Drive).
-    </p>
-    <CapstoneForm
-      courseId={courseId}
-      lessonKey={activeLesson.key}
-      onSubmit={(link) => {
-        saveProgressAdvanced(activeLesson.key, {
-          exSubmitted: true,
-          exPassed: !!link,
-          answers: { link },
-        });
-        toast.success("✅ Entrega subida correctamente");
-      }}
-    />
-  </div>
-)}
-
-{/* === CIERRE FINAL DEL CURSO === */}
-{activeLesson?.type === "closing" && (
-  <div className="mt-12 bg-slate-900/70 border border-slate-800 p-8 rounded-xl text-center">
-    <h3 className="text-2xl font-bold text-yellow-400 mb-3">
-      🎓 ¡Felicitaciones, completaste el curso!
-    </h3>
-    <p className="text-slate-300 mb-6">
-      Has finalizado todas las unidades y entregas. Tu progreso quedará
-      registrado y podrás revisar tus resultados desde el panel principal.
-    </p>
-    <button
-      onClick={() => {
-        toast.success("Curso completado ✅");
-        saveProgressAdvanced(activeLesson.key, {
-          exSubmitted: true,
-          exPassed: true,
-          finishedCourse: true,
-        });
-        setTimeout(() => router.push("/dashboard"), 1500);
-      }}
-      className="px-6 py-3 bg-yellow-400 text-black font-bold rounded-lg hover:bg-yellow-300"
-    >
-      Volver al panel
-    </button>
-  </div>
-)}
-
-
-
-
-{/* === PDF fullscreen modal === */}
-{pdfModalOpen && (
-  <div
-    className="fixed inset-0 z-50 bg-black/80 flex flex-col"
-    onClick={() => setPdfModalOpen(false)}
-  >
-    <div
-      className="h-12 px-4 flex items-center justify-between bg-[#0F172A] border-b border-slate-800"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <span className="text-sm font-medium text-slate-200">Visualizando PDF</span>
+  return (
+    <div key={u.id}>
       <button
-        onClick={() => setPdfModalOpen(false)}
-        className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:bg-slate-700"
+        onClick={() =>
+          setExpandedUnits((prev) => ({ ...prev, [uIdx]: !prev[uIdx] }))
+        }
+        className={`w-full text-left px-3 py-2 font-semibold flex justify-between items-center ${
+          expandedUnits[uIdx]
+            ? "bg-yellow-400/20 text-yellow-300"
+            : "hover:bg-slate-800 text-slate-300"
+        }`}
       >
-        Cerrar (Esc)
+        <span>Unit {unitNumber}: {u.title}</span>
+        <FiChevronRight
+          className={`transition-transform ${
+            expandedUnits[uIdx] ? "rotate-90" : ""
+          }`}
+        />
       </button>
-    </div>
-    <div
-      className="flex-1 bg-slate-900"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <iframe
-        src={toEmbedPdfUrl(activeLesson?.pdfUrl)}
-        title="PDF Viewer"
-        className="w-full h-full"
-      />
-    </div>
-  </div>
-)}
 
-
+      {expandedUnits[uIdx] && (
+        <div className="mt-1 space-y-1">
+          {u.lessons.map((l, lIdx) => {
+            const done =
+              progress[l.key]?.videoEnded || progress[l.key]?.exSubmitted;
+            const active = activeU === uIdx && activeL === lIdx;
+            return (
+              <button
+                key={l.key}
+                onClick={() => {
+                  setActiveU(uIdx);
+                  setActiveL(lIdx);
+                }}
+                className={`block w-full text-left px-5 py-1.5 rounded-md text-sm transition ${
+                  active
+                    ? "bg-yellow-400/10 text-yellow-300 border border-yellow-400/30"
+                    : done
+                    ? "text-emerald-400 hover:bg-slate-800"
+                    : "text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="truncate">{l.title}</span>
+                  {done && <FiCheckCircle size={12} className="text-emerald-400" />}
+                </div>
+              </button>
+            );
+          })}
         </div>
-      </main>
-
-      {/* === SIDEBAR DERECHO: RESUMEN DEL CURSO === */}
-<aside className="hidden xl:block xl:w-80 xl:shrink-0 bg-[#0F172A] border-l border-slate-800 p-5 overflow-y-auto">
-  <div className="flex items-center gap-2 text-slate-200 font-semibold mb-4">
-    <FiBookOpen className="text-yellow-400" />
-    <span>Resumen del curso</span>
-  </div>
-
-  <p className="text-sm text-slate-400 mb-4">
-    {String(curso?.descripcion || "Sin descripción disponible")}
-  </p>
-
-  {/* Progreso general */}
-  <div className="space-y-2 mb-6">
-    <div className="flex items-center justify-between text-xs text-slate-400">
-      <span>Progreso total</span>
-      <span className="font-semibold text-white">{progressPercent}%</span>
-    </div>
-    <div className="h-3 w-full bg-slate-800 rounded-full overflow-hidden">
-      <div
-        className="h-full bg-gradient-to-r from-yellow-400 to-yellow-300 rounded-full transition-all duration-500"
-        style={{ width: `${progressPercent}%` }}
-      />
-    </div>
-    <div className="text-xs text-slate-400">
-      {completedCount} de {totalLessons} lecciones completadas
-    </div>
-  </div>
-
-  {/* Datos actuales */}
-  <div className="space-y-3 text-sm border-t border-slate-800 pt-4">
-    <div className="flex items-center justify-between">
-      <span className="text-slate-300">Lección actual</span>
-      <span className="font-bold text-yellow-400">
-        {indexOfLesson(activeU, activeL) + 1}/{totalLessons}
-      </span>
-    </div>
-    <div className="flex items-center justify-between">
-      <span className="text-slate-300">Unidad</span>
-      <span className="font-semibold text-white">
-        {units[activeU]?.title || "—"}
-      </span>
-    </div>
-  </div>
-
-  {/* Próxima lección */}
-  {(() => {
-    const currentIdx = indexOfLesson(activeU, activeL);
-    const nextIdx = currentIdx + 1;
-    const nextLesson = flatLessons[nextIdx];
-    if (nextLesson) {
-      const nextUnit = units[nextLesson.uIdx];
-      const nextLessonData = nextUnit?.lessons?.[nextLesson.lIdx];
-      return (
-        <div className="mt-6 pt-4 border-t border-slate-800">
-          <div className="text-sm font-semibold text-slate-200 mb-2">
-            Próxima lección
-          </div>
-          <div className="text-xs text-slate-400">
-            <div className="font-medium text-slate-300 line-clamp-1">
-              {nextLessonData?.title}
-            </div>
-            <div className="text-slate-500 text-[12px]">
-              {nextUnit?.title}
-            </div>
-          </div>
-        </div>
-      );
-    }
-    if (currentIdx + 1 >= totalLessons) {
-      return (
-        <div className="mt-6 pt-4 border-t border-slate-800">
-          <div className="text-sm font-semibold text-emerald-400 mb-2">
-            🎉 Curso completado
-          </div>
-          <p className="text-xs text-slate-400">
-            Finalizaste todas las lecciones.
-          </p>
-        </div>
-      );
-    }
-    return null;
-  })()}
-
-  {/* Footer */}
-  <div className="mt-10 text-xs text-slate-500 border-t border-slate-800 pt-4">
-    © {new Date().getFullYear()} Further Academy
-  </div>
-</aside>
+      )}
     </div>
   );
+})}
+
+      </nav>
+    </aside>
+
+    {/* ======================= CONTENIDO PRINCIPAL ======================= */}
+    <main className="flex-1 p-8 overflow-y-auto">
+      <div className="max-w-5xl mx-auto space-y-6">
+        <h1 className="text-2xl font-bold text-white">
+          {activeLesson?.title || "Lección actual"}
+        </h1>
+
+        {resolvedVideoUrl && (
+          <div className="aspect-video rounded-xl overflow-hidden bg-black">
+            <iframe
+              src={resolvedVideoUrl}
+              className="w-full h-full"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        )}
+
+        {activeLesson?.text && (
+          <div className="bg-slate-900/60 p-5 rounded-xl border border-slate-800">
+            <p className="text-slate-300 whitespace-pre-line">{activeLesson.text}</p>
+          </div>
+        )}
+
+        {activeLesson?.pdfUrl && (
+          <div className="p-4 bg-slate-900/60 rounded-xl border border-slate-800">
+            <a
+              href={activeLesson.pdfUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-yellow-400 hover:underline flex items-center gap-2"
+            >
+              📄 Ver PDF adjunto
+            </a>
+          </div>
+        )}
+
+        {/* ======= EJERCICIOS (con navegación) ======= */}
+        {Array.isArray(activeLesson?.ejercicios) &&
+          activeLesson.ejercicios.length > 0 && (
+            <div className="bg-slate-900/70 p-6 rounded-xl border border-slate-800">
+              <h2 className="text-xl font-semibold mb-4 text-yellow-400">
+                🧠 Ejercicios ({activeLesson.ejercicios.length})
+              </h2>
+
+              <div className="space-y-6">
+                <div>
+                  <h3 className="font-medium text-gray-200 mb-3">
+                    {activeLesson.ejercicios[currentExercise].question ||
+                      activeLesson.ejercicios[currentExercise].prompt ||
+                      "Ejercicio"}
+                  </h3>
+
+                  <ExerciseRunner
+                    ejercicios={[
+                      activeLesson.ejercicios[currentExercise],
+                    ]}
+                    onSubmit={(result: { correct: number; total: number }) => {
+                      const passed = result.correct === result.total;
+                      saveProgressAdvanced(activeLesson.key, {
+                        exSubmitted: true,
+                        exPassed: passed,
+                        score: result,
+                      });
+                      toast[passed ? "success" : "info"](
+                        passed
+                          ? "✅ ¡Ejercicio aprobado!"
+                          : "⚠️ Algunas respuestas incorrectas"
+                      );
+                    }}
+                  />
+                </div>
+
+                {/* Navegación entre ejercicios */}
+                <div className="flex justify-between">
+                  <button
+                    onClick={prevExercise}
+                    disabled={currentExercise === 0}
+                    className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-gray-200 disabled:opacity-50"
+                  >
+                    ← Anterior
+                  </button>
+                  <button
+                    onClick={nextExercise}
+                    disabled={
+                      currentExercise >= activeLesson.ejercicios.length - 1
+                    }
+                    className="px-4 py-2 rounded-lg bg-yellow-400 hover:bg-yellow-300 text-black font-semibold"
+                  >
+                    Siguiente →
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+        {/* ======= MENSAJE FINAL DE LECCIÓN ======= */}
+        {activeLesson?.finalMessage && (
+          <div className="bg-green-900/40 border border-green-800 rounded-xl p-6 text-green-300">
+            {activeLesson.finalMessage}
+          </div>
+        )}
+
+        {/* ======= BOTÓN SIGUIENTE LECCIÓN ======= */}
+        <div className="mt-6 flex justify-end">
+          <button
+            onClick={goNextLesson}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold shadow bg-yellow-400 text-slate-900 hover:bg-yellow-300"
+          >
+            Siguiente lección
+            <FiChevronRight />
+          </button>
+        </div>
+      </div>
+    </main>
+
+    {/* ======================= SIDEBAR DERECHA ======================= */}
+    <aside className="hidden xl:block xl:w-80 xl:shrink-0 bg-[#0F172A] border-l border-slate-800 p-6">
+      <h3 className="text-lg font-semibold text-slate-200 mb-2">
+        Resumen del curso
+      </h3>
+      <p className="text-sm text-slate-400 mb-4">
+        {curso?.descripcion || "Sin descripción disponible"}
+      </p>
+
+      <div className="space-y-2 mb-6">
+        <div className="flex items-center justify-between text-xs text-slate-400">
+          <span>Progreso total</span>
+          <span className="font-semibold text-white">{progressPercent}%</span>
+        </div>
+        <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-yellow-400 rounded-full transition-all duration-500"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
+        <div className="text-xs text-slate-400">
+          {completedCount} de {totalLessons} lecciones completadas
+        </div>
+      </div>
+
+      <div className="border-t border-slate-800 pt-4 space-y-1 text-sm">
+        <p className="text-slate-400">Lección actual</p>
+        <p className="font-semibold text-yellow-400">
+          {activeLesson?.title || "—"}
+        </p>
+        <p className="text-xs text-slate-500">
+          Unidad: {units[activeU]?.title || "—"}
+        </p>
+      </div>
+    </aside>
+  </div>
+);
+
 }

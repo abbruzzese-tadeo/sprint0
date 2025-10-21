@@ -10,7 +10,7 @@ import {
   collection,
   serverTimestamp,
 } from "firebase/firestore";
-import { fetchUserFromBatchesByUid } from "@/lib/userBatches";
+import { fetchUserFromBatchesByUid, addUserToBatch } from "@/lib/userBatches";
 import { toast } from "sonner";
 import { signOut } from "firebase/auth";
 
@@ -200,35 +200,42 @@ const loadAllCursos = async () => {
     console.log("[AuthContext] Montando listener onAuthStateChanged...");
 
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setLoading(true);
-      if (firebaseUser) {
-        // console.log("👤 onAuthStateChanged disparado:", firebaseUser.email);
-        setUser(firebaseUser);
+  setLoading(true);
 
-        // 🔹 Buscar rol en batches
-        const profile = await fetchUserFromBatchesByUid(firebaseUser.uid);
-        const resolvedRole = profile?.role || "alumno";
-        setRole(resolvedRole);
-        // console.log(`🎭 Rol detectado: ${resolvedRole}`);
+  if (firebaseUser) {
+    console.log("👤 Usuario detectado:", firebaseUser.email);
+    setUser(firebaseUser);
 
-        // 🔹 Cargar datos globales
-        await loadAlumnos();
-        if (resolvedRole === "alumno") {
-  await loadMisCursos(firebaseUser.uid);
-} else if (resolvedRole === "admin" || resolvedRole === "profesor") {
-  await loadAllCursos();
-}
+    // 🔹 Buscar en Firestore
+    let profile = await fetchUserFromBatchesByUid(firebaseUser.uid);
 
-      } else {
-        // console.log("🚫 No hay usuario logueado");
-        setUser(null);
-        setRole(null);
-        setMisCursos([]);
-      }
+    // ⚠️ Si no existe, lo creamos
+    if (!profile) {
+      console.warn("⚠️ Usuario no encontrado en batches. Creando nuevo...");
+      await addUserToBatch(firebaseUser, "alumno");
+      profile = await fetchUserFromBatchesByUid(firebaseUser.uid);
+    }
 
-      setLoading(false);
-      setAuthReady(true);
-    });
+    const resolvedRole = profile?.role || "alumno";
+    setRole(resolvedRole);
+
+    // 🔹 Cargar datos según rol
+    await loadAlumnos();
+    if (resolvedRole === "alumno") {
+      await loadMisCursos(firebaseUser.uid);
+    } else if (resolvedRole === "admin" || resolvedRole === "profesor") {
+      await loadAllCursos();
+    }
+  } else {
+    setUser(null);
+    setRole(null);
+    setMisCursos([]);
+  }
+
+  setLoading(false);
+  setAuthReady(true);
+});
+
 
     return () => unsubscribe();
   }, []);
