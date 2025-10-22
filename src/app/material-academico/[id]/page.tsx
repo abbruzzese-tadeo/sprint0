@@ -26,6 +26,9 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { db as firestore, storage } from "@/lib/firebase";
 
+
+
+
 /* =========================================================
    📘 Tipos base (reutilizamos los tuyos, resumidos)
    ========================================================= */
@@ -103,7 +106,9 @@ export default function CoursePlayerPage() {
   const router = useRouter();
   const params = useParams();
   const courseId = params?.id?.toString?.() || "";
-  const { user, role, authReady, loading: authLoading } = useAuth();
+  const { user, role, authReady, loading: authLoading, userProfile, saveCourseProgress, getCourseProgress } = useAuth();
+
+
 
   // 🔸 Estados principales
   const [curso, setCurso] = useState<Curso | null>(null);
@@ -128,7 +133,10 @@ export default function CoursePlayerPage() {
 
   /* =========================================================
      🔹 Cargar curso desde Firestore
+
+     
      ========================================================= */
+     
   useEffect(() => {
     async function fetchCourse() {
       if (!firestore || !courseId) return;
@@ -225,32 +233,30 @@ useEffect(() => {
 }, [curso]);
 
 
+
 /* =========================================================
-   🔹 Cargar progreso desde Firestore (solo alumnos)
+   🔹 Cargar progreso del curso desde AuthContext
    ========================================================= */
 useEffect(() => {
   async function loadProgress() {
-    if (!firestore || !user?.email || !courseId) return;
+    if (!user?.uid || !courseId || !getCourseProgress) return;
 
-    try {
-      const ref = doc(firestore, "alumnos", user.email);
-      const snap = await getDoc(ref);
-      if (snap.exists()) {
-        const data = snap.data();
-        const courseProgress =
-          data?.progress?.[courseId]?.progress?.byLesson || {};
-        setProgress(courseProgress);
-        console.log("📊 Progreso cargado:", courseProgress);
-      } else {
-        console.log("📊 No hay progreso previo guardado.");
-      }
-    } catch (err) {
-      console.error("❌ Error al cargar progreso:", err);
+    console.log("📚 Cargando progreso del curso desde contexto...");
+    const data = await getCourseProgress(user.uid, courseId);
+
+    if (data?.byLesson) {
+      setProgress(data.byLesson);
+      console.log("📊 Progreso recuperado:", data.byLesson);
+    } else {
+      console.log("⚠️ No hay progreso previo guardado.");
+      setProgress({});
     }
   }
 
   loadProgress();
-}, [firestore, user?.email, courseId]);
+}, [user?.uid, courseId, getCourseProgress]);
+
+
 
 
 
@@ -357,11 +363,29 @@ const indexOfLesson = useCallback(
   [units]
 );
 
-const goNextLesson = () => {
+const goNextLesson = async () => {
   const currentIdx = indexOfLesson(activeU, activeL);
   const currentLesson = flatLessons[currentIdx];
-  if (currentLesson?.key) {
-    saveProgressAdvanced(currentLesson.key, { videoEnded: true });
+
+  if (currentLesson?.key && user?.uid && saveCourseProgress) {
+    try {
+      await saveCourseProgress(user.uid, courseId, {
+        [currentLesson.key]: { videoEnded: true },
+      });
+
+      // actualizamos estado local (para que el check se marque sin recargar)
+      setProgress((prev) => ({
+        ...prev,
+        [currentLesson.key]: {
+          ...(prev[currentLesson.key] || {}),
+          videoEnded: true,
+        },
+      }));
+
+      console.log("✅ Progreso guardado para:", currentLesson.key);
+    } catch (err) {
+      console.error("❌ Error guardando progreso:", err);
+    }
   }
 
   const nextIdx = currentIdx + 1;
@@ -376,6 +400,7 @@ const goNextLesson = () => {
     router.push("/dashboard");
   }
 };
+
 
 
   /* =========================================================
@@ -406,94 +431,14 @@ function computeStats(byLesson: any, totalLessons: number) {
 /* =========================================================
    💾 Guardar progreso (reemplaza el setProgress actual)
    ========================================================= */
-const saveProgressAdvanced = useCallback(
-  async (lessonKey: string, data: any) => {
-    if (!firestore || !user?.email || !courseId) return;
-    try {
-      const userRef = doc(firestore, "alumnos", user.email);
 
-      // Estado actualizado
-      const updated = {
-        ...progress,
-        [lessonKey]: {
-          ...(progress[lessonKey] || {}),
-          ...data,
-          updatedAt: Date.now(),
-        },
-      };
-
-      // Estructura resumida
-      const structure = buildCourseStructure(units);
-      const stats = computeStats(updated, totalLessons);
-
-      const payload = {
-        courseId,
-        courseMeta: {
-          id: curso?.id,
-          title: curso?.titulo,
-          totalUnits: units.length,
-          totalLessons,
-        },
-        courseStructure: structure,
-        progress: {
-          byLesson: updated,
-          lastActive: {
-            unitId: units[activeU]?.id,
-            lessonId: units[activeU]?.lessons?.[activeL]?.id,
-          },
-        },
-        stats,
-      };
-        console.log("🚨 [DEBUG] Payload completo antes de guardar:", JSON.stringify(payload, null, 2));
-
-function removeUndefined(obj: any): any {
-  if (Array.isArray(obj)) {
-    return obj.map(removeUndefined);
-  } else if (obj && typeof obj === "object") {
-    return Object.fromEntries(
-      Object.entries(obj)
-        .filter(([, v]) => v !== undefined)
-        .map(([k, v]) => [k, removeUndefined(v)])
-    );
-  }
-  return obj;
-}
-
-const sanitizedPayload = removeUndefined(payload);
-
-console.log("🚨 [DEBUG] Payload sanitizado:", sanitizedPayload);
-
-      await setDoc(
-  userRef,
-  { progress: { [courseId]: sanitizedPayload } },
-  { merge: true }
-);
-
-      setProgress(updated);
-      console.log("✅ Progreso guardado:", payload);
-    } catch (err) {
-      console.error("❌ Error guardando progreso:", err);
-    }
-  },
-  [
-    firestore,
-    user?.email,
-    courseId,
-    progress,
-    curso,
-    units,
-    totalLessons,
-    activeU,
-    activeL,
-  ]
-);
 
 
 useEffect(() => {
   const el = videoRef.current;
   if (!el) return;
 
-  const handleEnded = () => {
+  const handleEnded = async () => {
     console.log("🎬 [DEBUG] handleEnded disparado");
     setVideoEnded(true);
 
@@ -515,10 +460,12 @@ useEffect(() => {
         return updated;
       });
 
-      // Persiste en Firestore
-      saveProgressAdvanced(activeLesson.key, {
-        videoEnded: true,
-      });
+      if (user?.uid && saveCourseProgress) {
+  await saveCourseProgress(user.uid, courseId, {
+    [activeLesson.key]: { videoEnded: true },
+  });
+}
+
     } else {
       console.warn("⚠️ [DEBUG] No hay activeLesson.key definido");
     }
@@ -526,38 +473,44 @@ useEffect(() => {
 
   el.addEventListener("ended", handleEnded);
   return () => el.removeEventListener("ended", handleEnded);
-}, [activeLesson?.key, saveProgressAdvanced]);
+}, [activeLesson?.key, user?.uid, saveCourseProgress]);
+
 
 /* =========================================================
    🧠 ExerciseRunner — versión avanzada completa (TSX)
    ========================================================= */
 function ExerciseRunner({
-  ejercicios = [],
-  onSubmit,
+  ejercicios,
   lessonKey,
-  saveProgress,
-  userEmail,
+  batchId,
+  userKey,
   courseId,
+  onSubmit,
 }: {
   ejercicios: any[];
-  onSubmit?: (result: { correct: number; total: number; attempts: number }) => void;
   lessonKey: string;
-  saveProgress: (lessonKey: string, data: any) => Promise<void>;
-  userEmail: string;
+  batchId: string;
+  userKey: string;
   courseId: string;
+  onSubmit?: (result: { correct: number; total: number }) => void;
 }) {
   const [answers, setAnswers] = useState<Record<string, any>>({});
-  const [attempts, setAttempts] = useState(0);
+  const [submitted, setSubmitted] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(
     null
   );
-  const [showSolution, setShowSolution] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  const { user, saveCourseProgress } = useAuth();
 
+
+  // Manejar respuesta individual
   const handleAnswer = (id: string, value: any) => {
+    if (submitted) return; // ya respondió, no permitir más
     setAnswers((prev) => ({ ...prev, [id]: value }));
-    setFeedback(null);
   };
+useEffect(() => {
+  const prev = progress?.[lessonKey];
+  if (prev?.exSubmitted) setSubmitted(true);
+}, [lessonKey, progress]);
 
   const evalOne = (ex: any): boolean => {
     const a = answers[ex.id];
@@ -590,13 +543,16 @@ function ExerciseRunner({
           )
         );
       case "text":
-        return true; // no autograding
+        return true; // no se evalúa automáticamente
       default:
         return false;
     }
   };
 
-  const evaluate = async () => {
+  const evaluate = async (lessonKeyParam = lessonKey) => {
+
+    if (submitted) return; // no permitir reintento
+
     const total = ejercicios.length;
     let correct = 0;
     const details: Record<string, any> = {};
@@ -607,64 +563,45 @@ function ExerciseRunner({
       details[ex.id] = {
         correct: isOk,
         answer: answers[ex.id],
-        attempts: attempts + 1,
         timestamp: Date.now(),
       };
     });
 
-    const ok = correct === total;
-    const nextAttempts = attempts + 1;
-    setAttempts(nextAttempts);
+    const passed = correct === total;
+    setSubmitted(true);
+    setFeedback({
+      ok: passed,
+      msg: passed
+        ? "✅ ¡Correcto! ¡Ejercicio completado!"
+        : "❌ Incorrecto. Se registró tu intento.",
+    });
 
-    if (ok) {
-      setFeedback({ ok: true, msg: "✅ ¡Correcto! ¡Felicitaciones!" });
-      onSubmit?.({ correct, total, attempts: nextAttempts });
+    try {
+      if (!userProfile?.batchId || !userProfile?.userKey) {
+  console.error("❌ No hay batchId o userKey en userProfile");
+  return;
+}
 
-      // Guardamos en Firestore (por alumno, curso, lección)
-      setSubmitting(true);
-      try {
-        await saveProgress(lessonKey, {
-          exSubmitted: true,
-          exPassed: true,
-          attempts: nextAttempts,
-          score: { correct, total },
-          answers: details,
-          userEmail,
-          courseId,
-        });
-        console.log("💾 [DEBUG] Progreso de ejercicios guardado:", details);
-      } catch (err) {
-        console.error("❌ Error al guardar resultado:", err);
-      } finally {
-        setSubmitting(false);
-      }
-    } else {
-      setFeedback({
-        ok: false,
-        msg:
-          nextAttempts >= 2
-            ? "❌ Incorrecto. Mostrando solución."
-            : "❌ Incorrecto. Volvé a intentarlo.",
-      });
-      if (nextAttempts >= 2) setShowSolution(true);
+if (user?.uid && saveCourseProgress) {
+  await saveCourseProgress(user.uid, courseId, {
+    [lessonKeyParam]: {
+      exSubmitted: true,
+      exPassed: passed,
+      score: { correct, total },
+    },
+  });
+}
 
-      // Guardamos intento fallido también
-      try {
-        await saveProgress(lessonKey, {
-          exSubmitted: false,
-          exPassed: false,
-          attempts: nextAttempts,
-          answers: details,
-          userEmail,
-          courseId,
-        });
-      } catch (err) {
-        console.error("❌ Error guardando intento:", err);
-      }
+
+    } catch (err) {
+      console.error("🔥 Error guardando resultado:", err);
     }
+
+    onSubmit?.({ correct, total });
   };
 
   const renderSolution = (ex: any) => {
+    if (feedback?.ok) return null; // si aprobó, no mostrar
     switch (ex.type) {
       case "multiple_choice":
         return (
@@ -697,7 +634,9 @@ function ExerciseRunner({
       {ejercicios.map((ex) => (
         <div
           key={ex.id}
-          className="border border-slate-700 rounded-lg p-3 space-y-2"
+          className={`border rounded-lg p-3 space-y-2 ${
+            submitted && !feedback?.ok ? "opacity-70" : ""
+          }`}
         >
           <p className="font-semibold text-white mb-2">
             {ex.question || ex.prompt || ex.statement}
@@ -714,6 +653,7 @@ function ExerciseRunner({
                   <input
                     type="radio"
                     name={ex.id}
+                    disabled={submitted}
                     checked={answers[ex.id] === idx}
                     onChange={() => handleAnswer(ex.id, idx)}
                   />
@@ -736,6 +676,7 @@ function ExerciseRunner({
                     <input
                       type="radio"
                       name={ex.id}
+                      disabled={submitted}
                       checked={answers[ex.id] === val}
                       onChange={() => handleAnswer(ex.id, val)}
                     />
@@ -753,6 +694,7 @@ function ExerciseRunner({
                 <input
                   key={idx}
                   type="text"
+                  disabled={submitted}
                   placeholder={`Respuesta ${idx + 1}`}
                   className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-white text-sm"
                   value={answers[ex.id]?.[idx] || ""}
@@ -769,16 +711,22 @@ function ExerciseRunner({
             </div>
           )}
 
-          {showSolution && renderSolution(ex)}
+          {/* Mostrar solución si falló */}
+          {submitted && !feedback?.ok && renderSolution(ex)}
         </div>
       ))}
 
+      {/* BOTÓN DE ENVÍO */}
       <button
-        disabled={submitting}
+        disabled={submitted}
         onClick={evaluate}
-        className="px-4 py-2 bg-yellow-400 text-black font-semibold rounded hover:bg-yellow-300"
+        className={`px-4 py-2 font-semibold rounded ${
+          submitted
+            ? "bg-slate-700 text-gray-400 cursor-not-allowed"
+            : "bg-yellow-400 text-black hover:bg-yellow-300"
+        }`}
       >
-        {submitting ? "Guardando..." : "Comprobar respuestas"}
+        {submitted ? "Intento registrado" : "Comprobar respuestas"}
       </button>
 
       {feedback && (
@@ -792,7 +740,10 @@ function ExerciseRunner({
       )}
     </div>
   );
+
+  
 }
+
 
 
 
@@ -859,7 +810,7 @@ const prevExercise = () => {
    ========================================================= */
 function CapstoneForm({
   courseId,
-  lessonKey,
+  lessonkey,
   onSubmit,
 }: {
   courseId: string;
@@ -1069,23 +1020,53 @@ function CapstoneForm({
                   </h3>
 
                   <ExerciseRunner
-                    ejercicios={[
-                      activeLesson.ejercicios[currentExercise],
-                    ]}
-                    onSubmit={(result: { correct: number; total: number }) => {
-                      const passed = result.correct === result.total;
-                      saveProgressAdvanced(activeLesson.key, {
-                        exSubmitted: true,
-                        exPassed: passed,
-                        score: result,
-                      });
-                      toast[passed ? "success" : "info"](
-                        passed
-                          ? "✅ ¡Ejercicio aprobado!"
-                          : "⚠️ Algunas respuestas incorrectas"
-                      );
-                    }}
-                  />
+  ejercicios={[activeLesson.ejercicios[currentExercise]]}
+  lessonKey={activeLesson.key}
+  batchId={userProfile?.batchId}
+  userKey={userProfile?.userKey}
+  courseId={courseId}
+  onSubmit={async ({ correct, total }) => {
+  const passed = correct === total;
+
+  if (!user?.uid) {
+    toast.error("Inicia sesión para guardar tu progreso");
+    return;
+  }
+  if (!activeLesson?.key) {
+    console.error("No hay activeLesson.key");
+    return;
+  }
+
+  try {
+    await saveCourseProgress(user.uid, courseId, {
+      [activeLesson.key]: {
+        exSubmitted: true,
+        exPassed: passed,
+        score: { correct, total },
+      },
+    });
+
+    setProgress((prev) => ({
+      ...prev,
+      [activeLesson.key]: {
+        ...(prev[activeLesson.key] || {}),
+        exSubmitted: true,
+        exPassed: passed,
+        score: { correct, total },
+      },
+    }));
+
+    toast[passed ? "success" : "info"](
+      passed ? "🎉 ¡Ejercicio aprobado!" : "❌ Fallaste. Tu intento quedó guardado."
+    );
+  } catch (error) {
+    console.error("🔥 Error guardando progreso:", error);
+    toast.error("No se pudo guardar tu progreso");
+  }
+}}
+
+/>
+
                 </div>
 
                 {/* Navegación entre ejercicios */}

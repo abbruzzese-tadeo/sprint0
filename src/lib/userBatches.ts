@@ -7,6 +7,7 @@ const MAX_USERS_PER_BATCH = 200;
 const MAX_BATCHES = 10;
 const USER_KEY_PREFIX = "user_";
 
+
 /* =========================================================
    🔹 addUserToBatch — guarda usuario en batches de alumnos
    ========================================================= */
@@ -14,107 +15,94 @@ export const addUserToBatch = async (firebaseUser: User, role: Role = "alumno") 
   console.log("🚀 [addUserToBatch] Iniciando...");
   console.log("📧 Email:", firebaseUser.email, "🆔 UID:", firebaseUser.uid, "🎭 Role:", role);
 
-  if (!firebaseUser.email) {
-    console.error("❌ [addUserToBatch] El usuario no tiene un email válido");
+  if (!firebaseUser.email || !firebaseUser.uid) {
+    console.error("❌ [addUserToBatch] Usuario inválido (sin email o UID)");
     return;
   }
 
   try {
-    console.log("📦 Obteniendo lista de batches en colección 'alumnos'...");
-    const batchesSnapshot = await getDocs(collection(db, "alumnos"));
+    const alumnosRef = collection(db, "alumnos");
+    const batchesSnapshot = await getDocs(alumnosRef);
+
     const batches: { id: string; data: Record<string, any> }[] = [];
-    batchesSnapshot.forEach((docSnap) => {
-      batches.push({ id: docSnap.id, data: docSnap.data() });
-    });
+   batchesSnapshot.forEach((docSnap) => {
+  const id = docSnap.id;
+  // ✅ Solo considerar documentos que sigan el patrón "batch_X"
+  if (id.startsWith("batch_")) {
+    batches.push({ id, data: docSnap.data() });
+  } else {
+    console.warn(`⚠️ Documento ignorado: ${id} (no es un batch válido)`);
+  }
+});
 
     console.log(`📊 Cantidad de batches encontrados: ${batches.length}`);
 
-    // Buscar si ya existe el usuario
-    const isUserInBatches = (uid: string) => {
-      for (const batch of batches) {
-        for (const key in batch.data) {
-          if (key.startsWith(USER_KEY_PREFIX) && batch.data[key].uid === uid) {
-            console.log(`⚠️ Usuario encontrado en ${batch.id}/${key}`);
-            return true;
-          }
+    // 1️⃣ Evitar duplicados
+    for (const batch of batches) {
+      for (const key in batch.data) {
+        const user = batch.data[key];
+        if (key.startsWith(USER_KEY_PREFIX) && user?.uid === firebaseUser.uid) {
+          console.log(`⚠️ Usuario ya existe en ${batch.id}/${key}, no se agrega.`);
+          return;
         }
       }
-      return false;
-    };
-
-    if (isUserInBatches(firebaseUser.uid)) {
-      console.log("⚠️ Usuario ya existe en alumnos, no se agrega.");
-      return;
     }
 
-    // Buscar un batch con espacio libre
-    batches.sort(
-      (a, b) =>
-        parseInt(a.id.replace("batch_", "")) - parseInt(b.id.replace("batch_", ""))
-    );
-
+    // 2️⃣ Buscar batch con espacio libre
+    batches.sort((a, b) => parseInt(a.id.replace("batch_", "")) - parseInt(b.id.replace("batch_", "")));
     let targetBatchId: string | null = null;
-    let nextSlot: number | null = null;
+    let nextSlot = 0;
 
     for (const batch of batches) {
-      const userKeys = Object.keys(batch.data).filter((key) =>
-        key.startsWith(USER_KEY_PREFIX)
-      );
+      const userKeys = Object.keys(batch.data).filter((k) => k.startsWith(USER_KEY_PREFIX));
       if (userKeys.length < MAX_USERS_PER_BATCH) {
-        const usedSlots = userKeys
-          .map((key) => parseInt(key.replace(USER_KEY_PREFIX, "")))
-          .sort((a, b) => a - b);
-
+        const used = userKeys.map((k) => parseInt(k.replace(USER_KEY_PREFIX, "")));
         nextSlot = 0;
-        for (let i = 0; i <= usedSlots.length; i++) {
-          if (!usedSlots.includes(i)) {
-            nextSlot = i;
-            break;
-          }
-        }
+        while (used.includes(nextSlot)) nextSlot++;
         targetBatchId = batch.id;
         break;
       }
     }
 
-    // Crear un nuevo batch si no hay espacio
+    // 3️⃣ Crear nuevo batch si no hay espacio
     if (!targetBatchId) {
-      if (batches.length >= MAX_BATCHES) {
-        throw new Error("❌ Se alcanzó el límite máximo de batches.");
-      }
-
-      targetBatchId = `batch_${batches.length + 1}`;
-      nextSlot = 0;
+      const newBatchIndex = batches.length + 1;
+      targetBatchId = `batch_${newBatchIndex}`;
       console.log(`🆕 Creando nuevo batch: ${targetBatchId}`);
       await setDoc(doc(db, "alumnos", targetBatchId), {});
     }
 
+    // 4️⃣ Crear usuario
     const userKey = `${USER_KEY_PREFIX}${nextSlot}`;
     const newUser: BatchUser = {
       uid: firebaseUser.uid,
       email: firebaseUser.email,
       role,
-      batchId: targetBatchId!,
+      batchId: targetBatchId,
+      createdAt: new Date().toISOString(),
+      cursosAdquiridos: [],
+      progreso: {}, // ✅ estructura necesaria
     };
 
-    console.log("🧩 Datos del nuevo usuario:", newUser);
+    console.log("🧩 Usuario a guardar:", newUser);
 
-    await setDoc(
-      doc(db, "alumnos", targetBatchId!),
-      { [userKey]: newUser },
-      { merge: true }
-    );
+    // 5️⃣ Guardar correctamente en Firestore (sin campo basura)
+    const batchRef = doc(db, "alumnos", targetBatchId);
+    await setDoc(batchRef, { [userKey]: newUser }, { merge: true });
 
-    console.log(`✅ Usuario agregado correctamente a alumnos/${targetBatchId}/${userKey}`);
-  } catch (err: any) {
+    console.log(`✅ Usuario agregado correctamente en alumnos/${targetBatchId}/${userKey}`);
+  } catch (err) {
     console.error("🔥 [addUserToBatch] Error:", err);
   }
 };
 
+
 /* =========================================================
    🔹 fetchUserFromBatchesByUid — busca usuario por UID (login)
    ========================================================= */
-export const fetchUserFromBatchesByUid = async (uid: string): Promise<UserProfile | null> => {
+export const fetchUserFromBatchesByUid = async (
+  uid: string
+): Promise<UserProfile | null> => {
   console.log(`🔍 Buscando usuario con UID ${uid} en batches...`);
   for (let i = 1; i <= MAX_BATCHES; i++) {
     const ref = doc(db, "alumnos", `batch_${i}`);
@@ -131,6 +119,7 @@ export const fetchUserFromBatchesByUid = async (uid: string): Promise<UserProfil
           email: user.email,
           role: user.role,
           batchId: `batch_${i}`,
+          userKey: key, // ✅ agregado
         };
       }
     }
@@ -141,10 +130,14 @@ export const fetchUserFromBatchesByUid = async (uid: string): Promise<UserProfil
 };
 
 
+
+
 /* =========================================================
    🔹 fetchUserFromBatches — busca usuario por EMAIL (enrolamiento)
    ========================================================= */
-export const fetchUserFromBatches = async (email: string): Promise<UserProfile | null> => {
+export const fetchUserFromBatches = async (
+  email: string
+): Promise<UserProfile | null> => {
   console.log(`🔍 Buscando usuario con EMAIL ${email} en batches...`);
   for (let i = 1; i <= MAX_BATCHES; i++) {
     const ref = doc(db, "alumnos", `batch_${i}`);
@@ -161,6 +154,7 @@ export const fetchUserFromBatches = async (email: string): Promise<UserProfile |
           email: user.email,
           role: user.role,
           batchId: `batch_${i}`,
+          userKey: key, // ✅ agregado
         };
       }
     }
@@ -169,6 +163,7 @@ export const fetchUserFromBatches = async (email: string): Promise<UserProfile |
   console.warn("⚠️ Usuario no encontrado en ningún batch (EMAIL).");
   return null;
 };
+
 
 /* =========================================================
    🔹 fetchAllUsers — lista todos los usuarios de batches

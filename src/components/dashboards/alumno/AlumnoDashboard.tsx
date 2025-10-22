@@ -2,19 +2,23 @@
 
 import { useDashboardUI } from "@/stores/useDashboardUI";
 import HomeDashboard from "../HomeDashboard";
-import ProfileInfo from "../../perfil/ProfileInfo";
 import AlumnoCoursesPage from "./AlumnoCoursesPage";
+import AlumnoHome from "./AlumnoHome";
+import AlumnoCertificatesPage from "./AlumnoCertificatePage";
+import AlumnoProfilePage from "./AlumnoProfilePage";
 
 export default function AlumnoDashboard() {
   const { section } = useDashboardUI();
 
   switch (section) {
     case "home":
-      return <HomeDashboard />;
+      return <AlumnoHome />;
     case "miscursos":
-    return <AlumnoCoursesPage />;
+      return <AlumnoCoursesPage />;
+    case "certificados":
+      return <AlumnoCertificatesPage />;
     case "perfil":
-      return <ProfileInfo />;
+      return <AlumnoProfilePage />;
     default:
       return <HomeDashboard />;
   }

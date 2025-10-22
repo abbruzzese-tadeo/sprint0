@@ -5,6 +5,7 @@ import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'fire
 import { useRouter } from 'next/navigation';
 import { auth } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
+import { FiMail, FiLock, FiUser } from "react-icons/fi";
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -51,58 +52,91 @@ export default function LoginPage() {
       </div>
     );
 
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <form onSubmit={handleAuth} className="p-8 bg-white rounded-lg shadow-lg w-96">
-        <h2 className="text-2xl font-bold mb-6 text-gray-800 text-center">
-          {isRegister ? 'Registro' : 'Login'}
-        </h2>
-
-        <input
-          type="email"
-          placeholder="Email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="w-full p-3 border border-gray-300 rounded-lg mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-          required
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full p-3 border border-gray-300 rounded-lg mb-6 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
-          required
-        />
-
-        <button
-          type="submit"
-          disabled={loading}
-          className={`w-full bg-blue-500 hover:bg-blue-600 active:bg-blue-700 text-white p-3 rounded-lg font-medium transition duration-200 transform hover:scale-105 shadow-md ${
-            loading ? 'opacity-70 cursor-not-allowed' : ''
-          }`}
-        >
-          {loading
-            ? 'Procesando...'
-            : isRegister
-            ? 'Registrarse'
-            : 'Iniciar Sesión'}
-        </button>
-
-        {error && (
-          <p className="text-red-500 mt-3 text-sm text-center bg-red-50 p-2 rounded">
-            {error}
+  
+return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      <div className="bg-white w-full max-w-md rounded-2xl shadow-lg p-8 border border-gray-100">
+        {/* Logo / Header */}
+        <div className="text-center mb-6">
+          <h1 className="text-3xl font-bold text-gray-800 tracking-tight">
+            Further Academy
+          </h1>
+          <p className="text-gray-500 text-sm mt-1">
+            {isRegister ? "Crea una nueva cuenta" : "Inicia sesión para continuar"}
           </p>
-        )}
+        </div>
 
-        <button
-          type="button"
-          onClick={() => setIsRegister(!isRegister)}
-          className="w-full text-blue-500 hover:text-blue-700 mt-4 text-sm font-medium transition duration-200"
-        >
-          {isRegister ? 'Ya tengo cuenta' : 'Crear cuenta nueva'}
-        </button>
-      </form>
+        {/* Form */}
+        <form onSubmit={handleAuth} className="space-y-5">
+          <div>
+            <label className="block text-sm font-medium text-gray-600 mb-1">Email</label>
+            <div className="relative">
+              <FiMail className="absolute left-3 top-3 text-gray-400" size={18} />
+              <input
+                type="email"
+                placeholder="ejemplo@correo.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-600 mb-1">Contraseña</label>
+            <div className="relative">
+              <FiLock className="absolute left-3 top-3 text-gray-400" size={18} />
+              <input
+                type="password"
+                placeholder="••••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+                required
+              />
+            </div>
+          </div>
+
+          {error && (
+            <p className="text-red-500 bg-red-50 border border-red-100 rounded-md text-center py-2 text-sm">
+              {error}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className={`w-full py-2.5 text-white font-medium rounded-lg transition shadow-md ${
+              loading
+                ? "bg-blue-400 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
+            }`}
+          >
+            {loading
+              ? "Procesando..."
+              : isRegister
+              ? "Crear cuenta"
+              : "Iniciar Sesión"}
+          </button>
+        </form>
+
+        {/* Switch login/register */}
+        <div className="mt-5 text-center">
+          <button
+            type="button"
+            onClick={() => setIsRegister(!isRegister)}
+            className="text-blue-600 hover:text-blue-800 text-sm font-medium transition"
+          >
+            {isRegister ? "Ya tengo una cuenta" : "Crear cuenta nueva"}
+          </button>
+        </div>
+
+        {/* Footer */}
+        <div className="mt-8 text-center text-xs text-gray-400">
+          © {new Date().getFullYear()} Further Academy. Todos los derechos reservados.
+        </div>
+      </div>
     </div>
   );
 }

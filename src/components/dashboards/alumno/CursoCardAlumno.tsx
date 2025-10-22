@@ -1,63 +1,118 @@
 "use client";
 
-import React from "react";
+import { FiClock, FiBookOpen } from "react-icons/fi";
+import { Progress } from "@/components/ui/progress";
+import { Button } from "@/components/ui/button";
 import { useRouter } from "next/navigation";
-import { FiBookOpen, FiPlay } from "react-icons/fi";
 
-interface CourseCardAlumnoProps {
-  course: any;
+interface CursoCardAlumno {
+  id: string;
+  title: string;
+  description: string;
+  image: string;
+  level: string;
+  category?: string;
+  lessonsCount: number;
+  duration?: string;
+  progress?: number; // 0-100
+  completedLessons?: number;
 }
 
-export default function CourseCardAlumno({ course }: CourseCardAlumnoProps) {
+export default function CursoCardAlumno({
+  id,
+  title,
+  description,
+  image,
+  level,
+  category,
+  lessonsCount,
+  duration,
+  progress = 0,
+  completedLessons = 0,
+}: CursoCardAlumno) {
   const router = useRouter();
-
-  const handleOpenCourse = () => {
-    router.push(`/dashboard/curso/${course.id}`);
-  };
+  const progressLabel = progress >= 100 ? "Completed" : "In progress";
 
   return (
-    <div
-      className="group bg-white rounded-2xl border border-gray-200 shadow-sm hover:shadow-lg transition-all overflow-hidden flex flex-col"
-    >
-      {/* Imagen */}
-      <div className="relative h-48 bg-gray-100 overflow-hidden">
-        {course.urlImagen ? (
-          <img
-            src={course.urlImagen}
-            alt={course.titulo}
-            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-          />
-        ) : (
-          <div className="flex items-center justify-center h-full text-gray-400">
-            <FiBookOpen size={40} />
-          </div>
-        )}
-      </div>
+    <div className="bg-white rounded-2xl shadow-md overflow-hidden border border-slate-200 hover:shadow-lg transition-all duration-300">
+      {/* HEADER IMAGE */}
+      <div className="relative">
+        <img
+          src={image || "/images/default-course.jpg"}
+          alt={title}
+          className="w-full h-48 object-cover"
+        />
 
-      {/* Contenido */}
-      <div className="flex-1 flex flex-col p-5">
-        <h3 className="text-lg font-semibold text-gray-900 mb-1">
-          {course.titulo}
-        </h3>
-        <p className="text-gray-600 text-sm flex-1 line-clamp-3">
-          {course.descripcion || "Sin descripción disponible."}
-        </p>
-
-        <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
-          <span className="capitalize bg-gray-100 px-2 py-1 rounded-lg text-gray-600">
-            {course.nivel || "Nivel desconocido"}
-          </span>
-          <span className="text-gray-500">{course.categoria || "General"}</span>
+        {/* Overlay badges */}
+        <div className="absolute top-3 left-3 flex gap-2">
+          {category && (
+            <span className="bg-pink-100 text-pink-700 text-xs font-semibold px-2.5 py-1 rounded-full shadow-sm">
+              {category}
+            </span>
+          )}
+          {level && (
+            <span className="bg-blue-100 text-blue-700 text-xs font-semibold px-2.5 py-1 rounded-full shadow-sm">
+              {level}
+            </span>
+          )}
         </div>
 
-        {/* Botón */}
-        <button
-          onClick={handleOpenCourse}
-          className="mt-4 inline-flex items-center justify-center w-full gap-2 bg-blue-600 text-white text-sm font-medium py-2.5 rounded-xl hover:bg-blue-700 transition-all shadow-md"
-        >
-          <FiPlay size={16} />
-          Ver curso
-        </button>
+        {/* Progress bubble */}
+        <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm text-slate-800 text-xs font-semibold px-3 py-1.5 rounded-full shadow">
+          {progress}% <span className="text-slate-500">{progressLabel}</span>
+        </div>
+      </div>
+
+      {/* CONTENT */}
+      <div className="p-5 space-y-3">
+        <h2 className="text-lg font-semibold text-slate-800 leading-tight">
+          {title}
+        </h2>
+        <p className="text-slate-500 text-sm line-clamp-3">
+          {description || "No description available."}
+        </p>
+
+        <div className="flex items-center gap-4 text-xs text-slate-400 mt-2">
+          <div className="flex items-center gap-1.5">
+            <FiBookOpen size={14} /> {lessonsCount} lessons
+          </div>
+          {duration && (
+            <div className="flex items-center gap-1.5">
+              <FiClock size={14} /> {duration}
+            </div>
+          )}
+        </div>
+
+        {/* Progress Section */}
+        <div className="pt-3">
+          <div className="flex justify-between items-center text-xs mb-1 text-slate-500">
+            <span>
+              {completedLessons}/{lessonsCount} lessons completed
+            </span>
+            <span>{progress}%</span>
+          </div>
+          <Progress
+            value={progress}
+            className="h-2 bg-slate-100 [&>div]:bg-gradient-to-r [&>div]:from-pink-500 [&>div]:to-blue-500"
+          />
+        </div>
+
+        {/* ACTIONS */}
+        <div className="flex items-center justify-between pt-4">
+          <Button
+            onClick={() => router.push(`/material-academico/${id}`)}
+            className="bg-pink-600 hover:bg-pink-700 text-white font-semibold rounded-xl px-6 py-2"
+          >
+            {progress >= 100 ? "Review" : "Continue"}
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => router.push(`/material-academico/${id}`)}
+            className="border-slate-300 text-slate-700 hover:bg-slate-50 rounded-xl px-6 py-2"
+          >
+            View
+          </Button>
+        </div>
       </div>
     </div>
   );

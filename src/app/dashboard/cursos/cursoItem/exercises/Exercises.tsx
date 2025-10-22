@@ -8,6 +8,7 @@ import React, {
   useCallback,
 } from "react";
 
+
 // ===== Definiciones de tipo para los ejercicios =====
 
 interface ExerciseBase {
