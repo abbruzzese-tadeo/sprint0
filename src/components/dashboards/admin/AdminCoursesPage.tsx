@@ -10,83 +10,44 @@ import {
   DialogOverlay,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-
 import { useAuth } from "@/contexts/AuthContext";
 import CourseCard from "@/app/dashboard/cursos/CourseCard";
 import CreateCourse from "@/app/dashboard/cursos/crear/CreateCourse";
 import EditCourseForm from "@/app/dashboard/cursos/edit/EditCourseForm";
 import { deleteDoc, doc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { FiBookOpen, FiPlus } from "react-icons/fi";
 
-/* =========================================================
-   🔸 AdminCoursesPage — 100% data desde AuthContext
-   ========================================================= */
-export default function AdminCoursesPage() {
-  const {
-    allCursos,          // ✅ todos los cursos del contexto
-    loadingAllCursos,   // ✅ estado de carga
-    reloadData,
-  } = useAuth();
+export default function MaterialAcademico() {
+  const { allCursos, loadingAllCursos, reloadData } = useAuth();
 
-  // UI states
+  // Estados UI
   const [selectedCourse, setSelectedCourse] = useState<any | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
-
-  // Local display formatting
   const [localCourses, setLocalCourses] = useState<any[]>([]);
 
   /* =========================================================
-     🔹 Sincronizar datos globales con visual
-     ========================================================= */
+     🔹 Sincronizar datos globales con el estado local
+  ========================================================= */
   useEffect(() => {
     if (Array.isArray(allCursos)) {
       setLocalCourses(
         allCursos.map((c: any) => ({
-          id: c.id ?? c.docId ?? (() => {
-  console.warn("⚠️ Curso sin id detectado:", c);
-  return "";
-})(),
-
+          id: c.id ?? c.docId ?? "",
           title: c.titulo || "Sin título",
           description: c.descripcion || "",
           level: c.nivel || "N/A",
-          category: c.categoria || "Sin categoría",
-          type: c.capstone ? "Proyecto Capstone" : "Curso",
+          category: c.categoria || "General",
           students: Array.isArray(c.cursantes) ? c.cursantes.length : 0,
-          units: Array.isArray(c.unidades) ? c.unidades.length : 0,
-          lessons: Array.isArray(c.unidades)
-            ? c.unidades.reduce(
-                (acc: number, u: any) => acc + (u.lecciones?.length || 0),
-                0
-              )
-            : 0,
-          pdfs: Array.isArray(c.unidades)
-            ? c.unidades.reduce(
-                (acc: number, u: any) =>
-                  acc +
-                  (u.lecciones?.filter((l: any) => l.pdfUrl)?.length || 0),
-                0
-              )
-            : 0,
-          duration: Array.isArray(c.unidades)
-            ? `${c.unidades.reduce(
-                (acc: number, u: any) => acc + (u.duracion || 0),
-                0
-              )} min`
-            : "—",
-          created: c.creadoEn
-            ? new Date(c.creadoEn.seconds * 1000).toLocaleDateString()
-            : "N/A",
-          price: Number(c.precio?.monto || 0),
-          oldPrice: Number(
-            c.precio?.descuentoActivo && c.precio?.montoDescuento
-              ? c.precio.monto
-              : c.precio?.monto || 0
-          ),
-          image: c.urlImagen || "/images/default-course.jpg",
-          featured: !!c.precio?.descuentoActivo,
+          progress: Math.round(Math.random() * 100), // Placeholder hasta conectar stats reales
+          unidades: c.unidades?.length || 0,
+          created:
+            c.creadoEn?.seconds
+              ? new Date(c.creadoEn.seconds * 1000).toLocaleDateString()
+              : "N/A",
           visible: c.publico ?? true,
+          image: c.urlImagen || "/images/default-course.jpg",
           videoPresentacion: c.videoPresentacion || "",
         }))
       );
@@ -94,28 +55,24 @@ export default function AdminCoursesPage() {
   }, [allCursos]);
 
   /* =========================================================
-     🔹 CRUD actions
-     ========================================================= */
+     🔹 Acciones CRUD
+  ========================================================= */
 
-  // 🟢 Crear curso
   const handleCourseCreated = async () => {
     setIsCreateModalOpen(false);
     toast.success("Curso creado correctamente");
     await reloadData();
   };
 
-  // 🟡 Editar curso
   const handleEdit = (course: any) => {
     setSelectedCourse(course);
     setIsModalOpen(true);
   };
 
-  // 🔴 Eliminar curso
   const handleDelete = async (id: string) => {
     try {
       const confirmDelete = confirm("¿Seguro que deseas eliminar este curso?");
       if (!confirmDelete) return;
-
       await deleteDoc(doc(db, "cursos", id));
       toast.success("Curso eliminado correctamente");
       await reloadData();
@@ -125,52 +82,122 @@ export default function AdminCoursesPage() {
     }
   };
 
-  // 👁️ Toggle visibilidad (solo UI)
-  const handleToggleVisibility = (id: string) =>
-    setLocalCourses((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, visible: !c.visible } : c))
-    );
-
   /* =========================================================
      🔹 Render
-     ========================================================= */
+  ========================================================= */
+
   return (
-    <div className="p-8">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">Cursos</h1>
+    <div className="min-h-screen bg-gray-50 text-gray-800 p-8 space-y-10">
+      {/* HEADER */}
+      <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2">
+            <FiBookOpen className="text-blue-600" />
+            Material Académico
+          </h1>
+          <p className="text-gray-500 mt-1">
+            Administra los cursos disponibles en el campus. Crea, edita o elimina material académico.
+          </p>
+        </div>
+
         <Button
           onClick={() => setIsCreateModalOpen(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white"
+          className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-2"
         >
-          Crear curso
+          <FiPlus size={18} /> Nuevo curso
         </Button>
-      </div>
+      </header>
 
-      {/* Estado de carga */}
+      {/* ESTADO DE CARGA */}
       {loadingAllCursos ? (
-        <div className="text-center text-gray-500 py-10">
+        <div className="text-center text-gray-500 py-10 bg-white rounded-xl border border-gray-200 shadow-sm">
           Cargando cursos...
         </div>
       ) : localCourses.length === 0 ? (
-        <div className="text-center text-gray-500 py-10">
-          No hay cursos disponibles.
+        <div className="text-center text-gray-500 py-10 bg-white rounded-xl border border-gray-200 shadow-sm">
+          No hay cursos disponibles por el momento.
         </div>
       ) : (
-        <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {localCourses.map((course) => (
-            <CourseCard
+            <div
               key={course.id}
-              course={course}
-              onDelete={handleDelete}
-              onToggleVisibility={handleToggleVisibility}
-              onEdit={handleEdit}
-            />
+              className="bg-white border border-gray-200 rounded-xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden"
+            >
+              {/* HEADER */}
+              <div className="p-5 border-b border-gray-100 flex justify-between items-start">
+                <div>
+                  <h2 className="text-xl font-semibold text-gray-800">
+                    {course.title}
+                  </h2>
+                  <p className="text-sm text-gray-500 line-clamp-2">
+                    {course.description || "Sin descripción"}
+                  </p>
+                </div>
+                <span
+                  className={`text-xs px-3 py-1 rounded-full font-medium ${
+                    course.visible
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-gray-100 text-gray-500"
+                  }`}
+                >
+                  {course.visible ? "Público" : "Oculto"}
+                </span>
+              </div>
+
+              {/* STATS */}
+              <div className="px-5 py-3 text-sm grid grid-cols-2 md:grid-cols-3 gap-2 border-b border-gray-100">
+                <div className="text-gray-500">
+                  <span className="font-medium text-gray-800">{course.unidades}</span> unidades
+                </div>
+                <div className="text-gray-500">
+                  <span className="font-medium text-gray-800">{course.students}</span> alumnos
+                </div>
+                <div className="text-gray-500 hidden md:block">
+                  Creado:{" "}
+                  <span className="font-medium text-gray-800">
+                    {course.created}
+                  </span>
+                </div>
+              </div>
+
+              {/* PROGRESO */}
+              <div className="px-5 pt-4 pb-2">
+                <div className="flex justify-between text-xs text-gray-500 mb-1">
+                  <span>Progreso promedio</span>
+                  <span>{course.progress}%</span>
+                </div>
+                <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                    style={{ width: `${course.progress}%` }}
+                  ></div>
+                </div>
+              </div>
+
+              {/* ACCIONES */}
+              <div className="flex flex-wrap justify-end gap-3 p-5 border-t border-gray-100 bg-gray-50">
+                <Button
+                  variant="outline"
+                  onClick={() => handleEdit(course)}
+                  className="border-gray-300 text-gray-700 hover:bg-gray-100 rounded-lg text-sm"
+                >
+                  Editar
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => handleDelete(course.id)}
+                  className="border-red-200 text-red-600 hover:bg-red-50 rounded-lg text-sm"
+                >
+                  Eliminar
+                </Button>
+              </div>
+            </div>
           ))}
         </div>
       )}
 
-      {/* ✅ Modal Crear Curso */}
+      {/* ✅ MODAL: CREAR CURSO */}
       <Dialog open={isCreateModalOpen} onOpenChange={setIsCreateModalOpen}>
         <DialogOverlay className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40" />
         <DialogContent className="!max-w-none !w-[95vw] !h-[90vh] !p-0 overflow-hidden bg-transparent shadow-none border-none">
@@ -186,17 +213,18 @@ export default function AdminCoursesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ✅ Modal Editar Curso */}
+      {/* ✅ MODAL: EDITAR CURSO */}
       <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
         <DialogOverlay className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40" />
         <DialogContent className="!max-w-none !w-[95vw] !h-[90vh] !p-0 overflow-hidden bg-transparent shadow-none border-none">
           <VisuallyHidden>
             <DialogTitle>Editar Curso</DialogTitle>
           </VisuallyHidden>
-          {selectedCourse && (
+          {isModalOpen && selectedCourse && (
             <EditCourseForm
-              courseId={selectedCourse.id}
+              course={selectedCourse}
               onClose={() => setIsModalOpen(false)}
+              onUpdated={reloadData}
             />
           )}
         </DialogContent>

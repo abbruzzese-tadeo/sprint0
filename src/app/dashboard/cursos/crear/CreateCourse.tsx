@@ -25,6 +25,7 @@ import {
   arrayUnion,
   Firestore,
   Timestamp,
+  setDoc,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL, FirebaseStorage } from "firebase/storage";
 import { useAuth } from "@/contexts/AuthContext"; // ✅ correcto
@@ -57,6 +58,7 @@ import {
 import { storage, db } from "@/lib/firebase";
 import { enrollAlumnoToCourse } from "@/lib/enrollment";
 import { fetchUserFromBatches } from "@/lib/userBatches";
+
 
 /* ----------------- Interfaces for Data Structures ----------------- */
 
@@ -158,6 +160,24 @@ export const uploadFile = async (path: string, file: File): Promise<string> => {
 };
 
 
+// 🔹 Helper para crear profesor
+const crearProfesorEnFirestore = async (firestore: Firestore, batchId: string, data: any) => {
+
+  const dbToUse = firestore || db;
+  // Ruta válida con 3 segmentos (colección / documento / subcolección)
+const profCol = collection(dbToUse, "profesores_batches", `batch_${batchId}`, "profesores");
+
+  const profRef = doc(profCol); // genera profesor_X
+
+  await setDoc(profRef, {
+    ...data,
+    createdAt: serverTimestamp(),
+  });
+
+  return { id: profRef.id, ref: profRef };
+};
+
+
 interface CrearCursoProps {
   onClose?: () => void;
 }
@@ -198,6 +218,27 @@ function CrearCurso({ onClose }: CrearCursoProps) {
     textoFinalCurso: "",
     textoFinalCursoVideoUrl: "", // NEW: optional closing video
   });
+
+  // --- Profesor asignado ---
+const [asignarProfesor, setAsignarProfesor] = useState<"ninguno" | "existente" | "nuevo">("ninguno");
+
+// Lista de profesores existentes (si los querés cargar)
+const [profesores, setProfesores] = useState<any[]>([]);
+
+// Datos de profesor nuevo
+const [nuevoProfesor, setNuevoProfesor] = useState({
+  nombre: "",
+  apellido: "",
+  email: "",
+  idioma: "",
+  nivel: "",
+});
+
+// Profesor existente seleccionado
+const [profesorSeleccionado, setProfesorSeleccionado] = useState<string>("");
+
+// Batch actual (ajustá según tu lógica real)
+const batchId = "batch_1"; // o tomalo desde contexto si lo tenés
 
   /* =========================
      Units / Lessons
@@ -437,27 +478,20 @@ async function uploadToImgur(file: File): Promise<string | null> {
   }, [alumnos, searchAlumno]);
 
   /* =========================
-     Save
+     Save / HandleSubmit
      ========================= */
-    //  const safeSetLoader = setLoader || (() => {});
- 
-
 
   const handleSubmit = async (e: React.FormEvent) => {
   e.preventDefault();
   console.log("🔹 [DEBUG] Iniciando handleSubmit...");
 
   // Verificamos Firestore
-  console.log("🔹 [DEBUG] firestore:", firestore);
-  console.log("🔹 [DEBUG] db:", db);
-
-  if (!firestore && !db) {
+  const dbToUse = firestore || db;
+  if (!dbToUse) {
     toast.error("Firestore no inicializado");
     console.error("❌ [ERROR] Ninguna instancia de Firestore disponible.");
     return;
   }
-
-  const dbToUse = firestore || db; // usa lo que esté disponible
 
   // Validaciones básicas
   if (!curso.titulo?.trim()) {
@@ -471,7 +505,7 @@ async function uploadToImgur(file: File): Promise<string | null> {
 
   console.log("🔹 [DEBUG] Pasó validaciones iniciales");
 
-  // Normalizamos datos
+  // Normalizamos unidades
   const unidadesToSave: Unidad[] = unidades.map((u) => ({
     id: u.id || makeId(),
     titulo: u.titulo || "",
@@ -493,88 +527,138 @@ async function uploadToImgur(file: File): Promise<string | null> {
     })),
   }));
 
-  const payload = {
-    ...curso,
-    unidades: unidadesToSave,
-    examenFinal,
-    capstone,
-    creadoEn: serverTimestamp(),
-  };
-
-  console.log("📦 [DEBUG] Payload final a guardar:", payload);
-
-if (!firestore) return toast.error("Firestore no inicializado");
   try {
-    // 🔥 Paso 1: Guardar curso
-    console.log("🚀 [DEBUG] Intentando guardar curso...");
-    const refCurso = await addDoc(collection(firestore, "cursos"), payload);
-    console.log("✅ [DEBUG] Curso creado con ID:", refCurso.id);
+    console.log("🚀 [DEBUG] Iniciando bloque principal de creación...");
+
+    // =====================================================
+    // 1️⃣ Crear profesor si aplica
+    // =====================================================
+      const batchId = "batch_1"; // o dinámico si querés
+const batchRef = doc(dbToUse, "profesores", batchId);
+
+// Generar un ID de profesor único
+const profesorId = `profesor_${Date.now()}`;
+
+// Crear el objeto
+const profesorData = {
+  id: profesorId,
+  nombre: nuevoProfesor.nombre,
+  apellido: nuevoProfesor.apellido,
+  email: nuevoProfesor.email,
+  idioma: nuevoProfesor.idioma,
+  nivel: nuevoProfesor.nivel,
+  role: "profesor",
+  createdAt: new Date().toISOString(),
+};
+
+// Guardarlo dentro del batch, igual que alumnos
+await setDoc(
+  batchRef,
+  { [profesorId]: profesorData },
+  { merge: true }
+);
+
+console.log("✅ Profesor creado dentro de profesores/batch_1:", profesorData);
 
 
-   if (curso.cursantes.length > 0) {
-  console.log("🚀 Iniciando enrolamiento directo...");
+    // =====================================================
+    // 2️⃣ Crear el curso
+    // =====================================================
+    const payload = {
+      ...curso,
+      unidades: unidadesToSave,
+      examenFinal,
+      capstone,
+      creadoEn: serverTimestamp(),
+      ...(profesorData
+        ? {
+            profesorId: profesorData.id,
+            profesorRef: profesorData.ref,
+            profesorNombre: profesorData.nombre
+              ? `${profesorData.nombre} ${profesorData.apellido || ""}`.trim()
+              : undefined,
+          }
+        : {}),
+    };
 
-  for (const email of curso.cursantes.map(e => e.toLowerCase().trim())) {
-    try {
-      // Buscar en batches del 1 al 10
-      let userFound = false;
-      for (let i = 1; i <= 10; i++) {
-        const batchRef = doc(firestore, "alumnos", `batch_${i}`);
-        const snap = await getDoc(batchRef);
-        if (!snap.exists()) continue;
+    console.log("📦 [DEBUG] Payload final listo:", payload);
 
-        const data = snap.data();
-        const userKey = Object.keys(data).find(
-          (k) => k.startsWith("user_") && data[k]?.email === email
-        );
+    const refCurso = await addDoc(collection(dbToUse, "cursos"), payload);
+    console.log("✅ Curso creado con ID:", refCurso.id);
 
-        if (userKey) {
-          const path = `${userKey}.cursosAdquiridos`;
-          await updateDoc(batchRef, { [path]: arrayUnion(refCurso.id) });
-          console.log(`✅ ${email} actualizado en ${batchRef.id}/${userKey}`);
-          userFound = true;
-          break;
+    // =====================================================
+    // 3️⃣ Enrolamiento de alumnos (si existen)
+    // =====================================================
+    if (curso.cursantes.length > 0) {
+      console.log("🚀 Iniciando enrolamiento directo...");
+
+      for (const email of curso.cursantes.map((e) => e.toLowerCase().trim())) {
+        try {
+          let userFound = false;
+          for (let i = 1; i <= 10; i++) {
+            const batchRef = doc(dbToUse, "alumnos", `batch_${i}`);
+            const snap = await getDoc(batchRef);
+            if (!snap.exists()) continue;
+
+            const data = snap.data();
+            const userKey = Object.keys(data).find(
+              (k) => k.startsWith("user_") && data[k]?.email === email
+            );
+
+            if (userKey) {
+              const path = `${userKey}.cursosAdquiridos`;
+              await updateDoc(batchRef, { [path]: arrayUnion(refCurso.id) });
+              console.log(`✅ ${email} actualizado en ${batchRef.id}/${userKey}`);
+              userFound = true;
+              break;
+            }
+          }
+
+          if (!userFound) {
+            console.warn(`⚠️ Usuario ${email} no encontrado en ningún batch`);
+          }
+        } catch (err) {
+          console.error(`❌ Error enrolando ${email}:`, err);
         }
       }
 
-      if (!userFound) {
-        console.warn(`⚠️ Usuario ${email} no encontrado en ningún batch`);
-      }
-    } catch (err) {
-      console.error(`❌ Error enrolando ${email}:`, err);
+      // Relación inversa (emails en el curso)
+      const cursoRef = doc(dbToUse, "cursos", refCurso.id);
+      await updateDoc(cursoRef, {
+        cursantes: arrayUnion(...curso.cursantes.map((e) => e.toLowerCase())),
+      });
+
+      console.log("✅ Enrolamiento completado correctamente.");
     }
-  }
 
-  // Relación inversa: emails en el curso
-  const cursoRef = doc(firestore, "cursos", refCurso.id);
-  await updateDoc(cursoRef, {
-    cursantes: arrayUnion(...curso.cursantes.map(e => e.toLowerCase())),
-  });
+    // =====================================================
+    // 4️⃣ Relación inversa en profesor (si aplica)
+    // =====================================================
+    if (profesorData?.ref) {
+      await updateDoc(profesorData.ref, {
+        cursoAsignadoId: refCurso.id,
+        cursoAsignadoRef: refCurso,
+        updatedAt: serverTimestamp(),
+      });
+      console.log("🔁 Profesor actualizado con curso asignado.");
+    }
 
-  console.log("✅ Enrolamiento completado correctamente.");
-}
-
-
-
-
-    // 🔥 Paso 3: Actualizar estado local
-    const newCursoForState: Curso & { id: string } = {
-      id: refCurso.id,
-      ...payload,
-      creadoEn: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 } as Timestamp,
-    };
+    // =====================================================
+    // 5️⃣ Actualizar estado local y cerrar modal
+    // =====================================================
     await reloadData?.();
-
     toast.success("✅ Course created successfully");
     onClose?.();
+
+    console.log("🎉 [DEBUG] Curso creado correctamente:", refCurso.path);
   } catch (err: any) {
-    console.error("❌ [ERROR] Error creando curso:", err);
+    console.error("❌ [ERROR] Error creando curso o profesor:", err);
     toast.error("Error creating the course");
   } finally {
     console.log("🔹 [DEBUG] handleSubmit finalizado");
-    
   }
 };
+
 
 
   /* =========================
@@ -592,10 +676,14 @@ if (!firestore) return toast.error("Firestore no inicializado");
   }, [onClose]);
 
   const niveles = [
-    { value: "principiante", label: "Beginner" },
-    { value: "intermedio", label: "Intermediate" },
-    { value: "avanzado", label: "Advanced" },
-  ];
+    { value: "A1", label: "A1 - Beginner" },
+    { value: "A2", label: "A2 - Elementary" },
+    { value: "B1", label: "B1 - Intermediate" },
+    { value: "B2", label: "B2 - Upper Intermediate" },
+    { value: "B2.5", label: "B2.5 - High Intermediate" }, 
+    { value: "C1", label: "C1 - Advanced" },
+    { value: "C2", label: "C2 - Mastery" },
+];
 
   /* =========================
      RENDER
@@ -737,6 +825,103 @@ if (!firestore) return toast.error("Firestore no inicializado");
                           </div>
                         </div>
                       </div>
+                      {/* Profesor a cargo */}
+<div className="space-y-4 mt-6">
+  <label className="text-sm font-medium text-slate-700 flex items-center gap-2">
+    <FiUsers className="w-4 h-4" /> Professor in charge
+  </label>
+
+  {/* Modo de asignación */}
+  <div className="flex gap-4">
+    <label className="flex items-center gap-2">
+      <input
+        type="radio"
+        checked={asignarProfesor === "ninguno"}
+        onChange={() => setAsignarProfesor("ninguno")}
+      />
+      None
+    </label>
+    <label className="flex items-center gap-2">
+      <input
+        type="radio"
+        checked={asignarProfesor === "existente"}
+        onChange={() => setAsignarProfesor("existente")}
+      />
+      Existing
+    </label>
+    <label className="flex items-center gap-2">
+      <input
+        type="radio"
+        checked={asignarProfesor === "nuevo"}
+        onChange={() => setAsignarProfesor("nuevo")}
+      />
+      New
+    </label>
+  </div>
+
+  {/* Si selecciona EXISTENTE */}
+  {asignarProfesor === "existente" && (
+    <select
+      value={profesorSeleccionado}
+      onChange={(e) => setProfesorSeleccionado(e.target.value)}
+      className="w-full p-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
+    >
+      <option value="">Select existing professor</option>
+      {profesores.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.nombre} {p.apellido} ({p.email})
+        </option>
+      ))}
+    </select>
+  )}
+
+  {/* Si selecciona NUEVO */}
+  {asignarProfesor === "nuevo" && (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <input
+        type="text"
+        placeholder="Name"
+        value={nuevoProfesor.nombre}
+        onChange={(e) => setNuevoProfesor({ ...nuevoProfesor, nombre: e.target.value })}
+        className="p-3 border border-slate-300 rounded-xl"
+      />
+      <input
+        type="text"
+        placeholder="Last name"
+        value={nuevoProfesor.apellido}
+        onChange={(e) => setNuevoProfesor({ ...nuevoProfesor, apellido: e.target.value })}
+        className="p-3 border border-slate-300 rounded-xl"
+      />
+      <input
+        type="email"
+        placeholder="Email"
+        value={nuevoProfesor.email}
+        onChange={(e) => setNuevoProfesor({ ...nuevoProfesor, email: e.target.value })}
+        className="p-3 border border-slate-300 rounded-xl"
+      />
+      <input
+        type="text"
+        placeholder="Language (e.g. English)"
+        value={nuevoProfesor.idioma}
+        onChange={(e) => setNuevoProfesor({ ...nuevoProfesor, idioma: e.target.value })}
+        className="p-3 border border-slate-300 rounded-xl"
+      />
+      <select
+        value={nuevoProfesor.nivel}
+        onChange={(e) => setNuevoProfesor({ ...nuevoProfesor, nivel: e.target.value })}
+        className="p-3 border border-slate-300 rounded-xl"
+      >
+        <option value="">Select level</option>
+        {niveles.map((n) => (
+          <option key={n.value} value={n.value}>
+            {n.label}
+          </option>
+        ))}
+      </select>
+    </div>
+  )}
+</div>
+
 
                       <div className="flex items-center gap-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
                         <input

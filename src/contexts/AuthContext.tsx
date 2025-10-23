@@ -43,6 +43,11 @@ interface AuthContextType {
   logout?: () => Promise<void>;
   firestore?: any;
   storage?: any;
+
+  profesores?: any[];
+  loadingProfesores?: boolean;
+  loadProfesores?: () => Promise<void>;
+  
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -71,6 +76,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [loadingCursos, setLoadingCursos] = useState(false);
   const [loadingAllCursos, setLoadingAllCursos] = useState(false);
   const [userProfile, setUserProfile] = useState<any | null>(null);
+
+  const [profesores, setProfesores] = useState<any[]>([]);
+  const [loadingProfesores, setLoadingProfesores] = useState(false);
+
 
   /* ==========================================================
      🔹 Logout
@@ -212,8 +221,42 @@ const loadMisCursos = async (uid: string) => {
   };
 
   /* ==========================================================
-     🔹 Guardar progreso de curso
-     ========================================================== */
+   🔹 Cargar profesores (para admin)
+   ========================================================== */
+const loadProfesores = async () => {
+  setLoadingProfesores(true);
+  try {
+    const profesoresRef = collection(db, "profesores");
+    const snap = await getDocs(profesoresRef);
+    const allProfes: any[] = [];
+
+    snap.forEach((batchDoc) => {
+      const data = batchDoc.data();
+      for (const key in data) {
+        if (key.startsWith("profesor_")) {
+          allProfes.push({
+            id: key,
+            batchId: batchDoc.id,
+            ...data[key],
+          });
+        }
+      }
+    });
+
+    setProfesores(allProfes);
+    console.log("✅ Profesores cargados:", allProfes.length);
+  } catch (err) {
+    console.error("❌ [AuthContext] Error cargando profesores:", err);
+    toast.error("Error cargando profesores");
+  } finally {
+    setLoadingProfesores(false);
+  }
+};
+
+
+
+
+
   /* ==========================================================
    🔹 Guardar progreso de curso (admin o alumno)
    ========================================================== */
@@ -308,52 +351,76 @@ const getCourseProgress = async (uid: string, courseId: string) => {
      🔹 Reload global (alumnos + cursos)
      ========================================================== */
   const reloadData = async () => {
+  if (!user) return;
+
+  if (role === "admin") {
     await Promise.all([
-      loadAlumnos(),
-      user?.uid ? loadMisCursos(user.uid) : Promise.resolve(),
+      loadAlumnos?.(),
+      loadAllCursos?.(),
+      loadProfesores?.(),
     ]);
-  };
+  } else if (role === "alumno") {
+    await Promise.all([
+      loadAlumnos?.(),
+      loadMisCursos?.(user.uid),
+    ]);
+  } else {
+    // fallback (profesor u otros)
+    await loadAllCursos?.();
+  }
+};
 
   /* ==========================================================
      🔹 Listener de Auth
      ========================================================== */
   useEffect(() => {
-    console.log("[AuthContext] Montando listener...");
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setLoading(true);
+  console.log("[AuthContext] Montando listener...");
+  const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    setLoading(true);
 
-      if (firebaseUser) {
-        console.log("👤 Usuario detectado:", firebaseUser.email);
-        setUser(firebaseUser);
+    if (firebaseUser) {
+      console.log("👤 Usuario detectado:", firebaseUser.email);
+      setUser(firebaseUser);
 
-        let profile = await fetchUserFromBatchesByUid(firebaseUser.uid);
+      let profile = await fetchUserFromBatchesByUid(firebaseUser.uid);
 
-        if (!profile) {
-          console.warn("⚠️ Usuario no encontrado en batches, creando...");
-          await addUserToBatch(firebaseUser, "alumno");
-          profile = await fetchUserFromBatchesByUid(firebaseUser.uid);
-        }
-
-        const resolvedRole = profile?.role || "alumno";
-        setRole(resolvedRole);
-        setUserProfile(profile);
-
-        await loadAlumnos();
-        if (resolvedRole === "alumno") await loadMisCursos(firebaseUser.uid);
-        else await loadAllCursos();
-      } else {
-        setUser(null);
-        setRole(null);
-        setMisCursos([]);
-        setUserProfile(null);
+      if (!profile) {
+        console.warn("⚠️ Usuario no encontrado en batches, creando...");
+        await addUserToBatch(firebaseUser, "alumno");
+        profile = await fetchUserFromBatchesByUid(firebaseUser.uid);
       }
 
-      setLoading(false);
-      setAuthReady(true);
-    });
+      const resolvedRole = profile?.role || "alumno";
+      setRole(resolvedRole);
+      setUserProfile(profile);
 
-    return () => unsubscribe();
-  }, []);
+      // 🔹 Carga base
+      await loadAlumnos();
+
+      if (resolvedRole === "alumno") {
+        await loadMisCursos(firebaseUser.uid);
+      } else {
+        // 🔹 Admin o profesor: cargamos cursos y profesores
+        await Promise.all([
+          loadAllCursos(),
+          loadProfesores(),
+        ]);
+      }
+    } else {
+      // 🔹 Logout
+      setUser(null);
+      setRole(null);
+      setMisCursos([]);
+      setUserProfile(null);
+    }
+
+    setLoading(false);
+    setAuthReady(true);
+  });
+
+  return () => unsubscribe();
+}, []);
+
 
   /* ==========================================================
      🔹 Valor del contexto
@@ -376,6 +443,10 @@ const getCourseProgress = async (uid: string, courseId: string) => {
     getCourseProgress,
     logout,
     firestore: db,
+    profesores,
+    loadingProfesores,
+    loadProfesores,
+
   };
 
   return (
